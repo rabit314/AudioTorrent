@@ -85,12 +85,35 @@ fun AudioBookBayScreen(
   onBack: () -> Unit,
   onOpenTorrent: (String) -> Unit,
   onOpenPlayer: () -> Unit,
+  initialCategory: String = "All",
   modifier: Modifier = Modifier,
 ) {
   val playbackState by container.playback.state.collectAsStateWithLifecycle()
   val scope = rememberCoroutineScope()
   val focusManager = LocalFocusManager.current
 
+  val categories = remember {
+    listOf(
+      "All",
+      "Sci-Fi",
+      "Fantasy",
+      "Fiction",
+      "Mystery",
+      "Thriller",
+      "Horror",
+      "History",
+      "Crime",
+      "Romance",
+      "Non-Fiction",
+      "Biography",
+      "Action",
+      "Adventure",
+      "Business",
+      "Teen / YA",
+    )
+  }
+
+  var selectedCategory by remember { mutableStateOf(initialCategory) }
   var query by remember { mutableStateOf("") }
   var books by remember { mutableStateOf<List<AudioBookItem>>(emptyList()) }
   var recentSearches by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -111,13 +134,16 @@ fun AudioBookBayScreen(
     }
   }
 
-  fun loadBooks(newQuery: String, targetPage: Int = 1) {
+  fun loadBooks(newQuery: String, category: String = selectedCategory, targetPage: Int = 1) {
     scope.launch {
       isLoading = true
       errorMessage = null
       page = targetPage
-      val result = if (newQuery.isNotBlank()) {
-        container.audiobookbay.search(newQuery, "Latest", targetPage)
+      val trimmed = newQuery.trim()
+      val result = if (trimmed.isNotBlank()) {
+        container.audiobookbay.search(trimmed, category, targetPage)
+      } else if (!category.equals("All", ignoreCase = true)) {
+        container.audiobookbay.getByCategory(category, targetPage)
       } else {
         container.audiobookbay.getLatest(targetPage)
       }
@@ -136,7 +162,7 @@ fun AudioBookBayScreen(
   LaunchedEffect(Unit) {
     refreshSearches()
     container.audiobookbay.login()
-    loadBooks("", 1)
+    loadBooks(query, selectedCategory, 1)
   }
 
   Scaffold(
@@ -247,7 +273,7 @@ fun AudioBookBayScreen(
                   container.database.saveRecentSearch(trimmed)
                   refreshSearches()
                 }
-                loadBooks(trimmed, 1)
+                loadBooks(trimmed, selectedCategory, 1)
               }
             }
           ),
@@ -257,7 +283,7 @@ fun AudioBookBayScreen(
             if (query.isNotBlank()) {
               IconButton(onClick = {
                 query = ""
-                loadBooks("", 1)
+                loadBooks("", selectedCategory, 1)
               }) {
                 Icon(Icons.Default.Clear, contentDescription = "Clear search")
               }
@@ -274,14 +300,32 @@ fun AudioBookBayScreen(
                 container.database.saveRecentSearch(trimmed)
                 refreshSearches()
               }
-              loadBooks(trimmed, 1)
+              loadBooks(trimmed, selectedCategory, 1)
             } else {
-              loadBooks("", 1)
+              loadBooks("", selectedCategory, 1)
             }
           },
           enabled = !isLoading,
         ) {
           Text("Go")
+        }
+      }
+
+      // Category Filter Chips
+      LazyRow(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        items(categories, key = { it }) { cat ->
+          FilterChip(
+            selected = selectedCategory.equals(cat, ignoreCase = true),
+            onClick = {
+              selectedCategory = cat
+              loadBooks(query, cat, 1)
+            },
+            label = { Text(cat) },
+          )
         }
       }
 
@@ -324,7 +368,7 @@ fun AudioBookBayScreen(
                     container.database.saveRecentSearch(term)
                     refreshSearches()
                   }
-                  loadBooks(term, 1)
+                  loadBooks(term, selectedCategory, 1)
                 },
                 label = { Text(term) },
                 leadingIcon = {
@@ -373,7 +417,7 @@ fun AudioBookBayScreen(
             Spacer(Modifier.height(8.dp))
             Text(errorMessage ?: "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             Spacer(Modifier.height(16.dp))
-            Button(onClick = { loadBooks(query, page) }) {
+            Button(onClick = { loadBooks(query, selectedCategory, page) }) {
               Text("Retry")
             }
           }
@@ -433,7 +477,7 @@ fun AudioBookBayScreen(
               horizontalArrangement = Arrangement.Center,
             ) {
               if (page > 1) {
-                TextButton(onClick = { loadBooks(query, page - 1) }) {
+                TextButton(onClick = { loadBooks(query, selectedCategory, page - 1) }) {
                   Text("← Previous Page")
                 }
                 Spacer(Modifier.width(16.dp))
@@ -444,7 +488,7 @@ fun AudioBookBayScreen(
                 style = MaterialTheme.typography.bodyMedium,
               )
               Spacer(Modifier.width(16.dp))
-              TextButton(onClick = { loadBooks(query, page + 1) }) {
+              TextButton(onClick = { loadBooks(query, selectedCategory, page + 1) }) {
                 Text("Next Page →")
               }
             }

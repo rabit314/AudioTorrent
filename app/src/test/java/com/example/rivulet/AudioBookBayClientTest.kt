@@ -85,9 +85,9 @@ class AudioBookBayClientTest {
     assertEquals("mystery", client.categoryToSlug("Mystery"))
     assertEquals("thriller", client.categoryToSlug("Thriller"))
     assertEquals("history", client.categoryToSlug("History"))
-    assertEquals("fiction", client.categoryToSlug("Fiction"))
-    assertEquals("non-fiction", client.categoryToSlug("Non-Fiction"))
-    assertEquals("action-adventure", client.categoryToSlug("Action"))
+    assertEquals("general-fiction", client.categoryToSlug("Fiction"))
+    assertEquals("general-non-fiction", client.categoryToSlug("Non-Fiction"))
+    assertEquals("action", client.categoryToSlug("Action"))
   }
 
   @Test
@@ -160,5 +160,17 @@ class AudioBookBayClientTest {
     assertEquals(2, items.size)
     assertEquals("Victoria Station season 1 - Steve Chambers", items[0].title)
     assertEquals("Dune - Frank Herbert", items[1].title)
+  }
+
+  @Test
+  fun testCategorySlugs_AreAllNonEmpty() {
+    val client = AudioBookBayClient()
+    val genres = listOf("Sci-Fi", "Fantasy", "Fiction", "Mystery", "Thriller", "Horror", "History", "Crime", "Romance", "Non-Fiction", "Biography", "Action", "Adventure", "Business", "Teen / YA")
+    for (genre in genres) {
+      val slug = client.categoryToSlug(genre)
+      assertTrue("Slug for $genre must not be empty", slug.isNotBlank())
+      assertFalse("Slug for $genre must not contain uppercase", slug.any { it.isUpperCase() })
+      assertFalse("Slug for $genre must not contain spaces", slug.contains(" "))
+    }
   }
 }

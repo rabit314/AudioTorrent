@@ -86,19 +86,27 @@ class AudioBookBayClient(
 
   fun categoryToSlug(category: String): String =
     when (category.lowercase().trim()) {
+      "all", "latest", "" -> ""
       "sci-fi", "science fiction", "scifi" -> "sci-fi"
       "fantasy" -> "fantasy"
       "mystery" -> "mystery"
       "thriller" -> "thriller"
       "history" -> "history"
-      "fiction" -> "fiction"
-      "non-fiction", "nonfiction" -> "non-fiction"
+      "fiction", "general fiction", "general-fiction" -> "general-fiction"
+      "non-fiction", "nonfiction", "general non-fiction", "general-non-fiction" -> "general-non-fiction"
       "romance" -> "romance"
       "horror" -> "horror"
-      "action", "adventure", "action-adventure" -> "action-adventure"
+      "action", "adventure", "action-adventure" -> "action"
       "crime" -> "crime"
       "business" -> "business"
-      "biography", "biographies" -> "bios-autobiography"
+      "biography", "biographies", "autobiography", "autobiographies" -> "autobiography-biographies"
+      "teen", "teens", "young adult", "ya", "teen-young-adult" -> "teen-young-adult"
+      "children", "kids" -> "children"
+      "suspense" -> "suspense"
+      "true crime", "true-crime" -> "true-crime"
+      "classic", "classics" -> "classic"
+      "litrpg" -> "litrpg"
+      "postapocalyptic", "post-apocalyptic" -> "postapocalyptic"
       else -> category.lowercase().trim().replace(" ", "-")
     }
 
@@ -112,27 +120,31 @@ class AudioBookBayClient(
   suspend fun getByCategory(category: String, page: Int = 1): Result<List<AudioBookItem>> = withContext(Dispatchers.IO) {
     runCatching {
       val slug = categoryToSlug(category)
-      val url = if (page <= 1) "$baseUrl/audio-books/$slug/" else "$baseUrl/audio-books/$slug/page/$page/"
-      try {
-        fetchAndParsePage(url)
-      } catch (t: Throwable) {
-        val fallbackUrl = if (page <= 1) "$baseUrl/category/$slug/" else "$baseUrl/category/$slug/page/$page/"
-        fetchAndParsePage(fallbackUrl)
+      val url = if (slug.isBlank() || slug == "latest" || slug == "all") {
+        if (page <= 1) "$baseUrl/" else "$baseUrl/page/$page/"
+      } else {
+        if (page <= 1) "$baseUrl/audio-books/type/$slug/" else "$baseUrl/audio-books/type/$slug/page/$page/"
       }
+      fetchAndParsePage(url)
     }
   }
 
   suspend fun search(query: String, category: String? = null, page: Int = 1): Result<List<AudioBookItem>> = withContext(Dispatchers.IO) {
     runCatching {
-      val trimmed = query.trim()
-      val fullQuery = if (!category.isNullOrBlank() && category != "Latest" && !trimmed.contains(category, ignoreCase = true)) {
-        "$trimmed $category"
-      } else {
-        trimmed
-      }
-      val encoded = URLEncoder.encode(fullQuery, "UTF-8")
+      val cleanQuery = query.lowercase().trim()
+      val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
       val url = if (page <= 1) "$baseUrl/?s=$encoded" else "$baseUrl/page/$page/?s=$encoded"
-      fetchAndParsePage(url)
+      val items = fetchAndParsePage(url)
+
+      if (!category.isNullOrBlank() && category != "All" && category != "Latest") {
+        val filtered = items.filter { item ->
+          item.category.contains(category, ignoreCase = true) ||
+            category.contains(item.category, ignoreCase = true)
+        }
+        if (filtered.isNotEmpty()) filtered else items
+      } else {
+        items
+      }
     }
   }
 
