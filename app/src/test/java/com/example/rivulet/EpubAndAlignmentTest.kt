@@ -3,13 +3,17 @@ package com.example.rivulet
 import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.lyrics.AlignmentStrategy
 import com.example.rivulet.data.lyrics.AudioBookAligner
+import com.example.rivulet.data.lyrics.BookTitleCleaner
 import com.example.rivulet.data.lyrics.EpubBook
 import com.example.rivulet.data.lyrics.EpubChapter
 import com.example.rivulet.data.lyrics.EpubExtractor
 import com.example.rivulet.data.lyrics.EpubStructureParser
+import com.example.rivulet.data.lyrics.IsbnValidator
 import com.example.rivulet.data.lyrics.PacedTimingEngine
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -199,5 +203,103 @@ class EpubAndAlignmentTest {
     assertEquals("Chapter 1. The Boy Who Lived", chapters[0].title)
     assertEquals("Chapter 2. The Vanishing Glass", chapters[1].title)
     assertTrue(chapters[0].wordCount > 10)
+  }
+
+  @Test
+  fun testIsbnValidatorCalculations() {
+    // Valid ISBN-10 (standard check digit and 'X' check digit)
+    assertTrue("0-306-40615-2 should be valid ISBN-10", IsbnValidator.isValid("0-306-40615-2"))
+    assertTrue("080442957X should be valid ISBN-10 with check digit X", IsbnValidator.isValid("080442957X"))
+    assertTrue("1844168603 should be valid ISBN-10", IsbnValidator.isValid("1844168603"))
+
+    // Invalid ISBN-10
+    assertFalse("0-306-40615-3 has bad check digit", IsbnValidator.isValid("0-306-40615-3"))
+
+    // Valid ISBN-13
+    assertTrue("978-0-306-40615-7 should be valid ISBN-13", IsbnValidator.isValid("978-0-306-40615-7"))
+    assertTrue("978-1-84416-860-6 should be valid ISBN-13", IsbnValidator.isValid("978-1-84416-860-6"))
+
+    // Invalid ISBN-13
+    assertFalse("978-0-306-40615-0 has bad check digit", IsbnValidator.isValid("978-0-306-40615-0"))
+    assertFalse("Empty string is not valid", IsbnValidator.isValid(""))
+    assertFalse("Random characters are not valid", IsbnValidator.isValid("abcdefghijk"))
+
+    // Extraction from metadata / text
+    val extracted = IsbnValidator.extractFirstValidIsbn("urn:isbn:978-1-84416-860-6 (pbk.)")
+    assertEquals("978-1-84416-860-6", extracted)
+
+    val extractedRaw = IsbnValidator.extractFirstValidIsbn("Book ID: 080442957X in catalog")
+    assertNotNull(extractedRaw)
+  }
+
+  @Test
+  fun testBookTitleCleanerResolution() {
+    // Case 1: Specific book title in track inside omnibus container (e.g. user's exact case)
+    val book1 = BookTitleCleaner.resolveCleanBookTitle("[01] Soul Hunter.m4b", "Night Lords")
+    assertEquals("Soul Hunter", book1)
+
+    // Case 2: Clean file name with track number and underscores
+    val book2 = BookTitleCleaner.resolveCleanBookTitle("02 - Blood_Reaver.m4b", "Night Lords Omnibus")
+    assertEquals("Blood Reaver", book2)
+
+    // Case 3: Generic track name - falls back to container title
+    val book3 = BookTitleCleaner.resolveCleanBookTitle("01 - Chapter 1.mp3", "Ray Bradbury - Fahrenheit 451")
+    assertEquals("Fahrenheit 451", book3)
+
+    // Case 4: Track name containing author prefix
+    val book4 = BookTitleCleaner.resolveCleanBookTitle("Aaron Dembski-Bowden - Void Stalker [Audiobook].mp3", "Warhammer")
+    assertEquals("Void Stalker", book4)
+
+    // Case 5: Path components stripped
+    val book5 = BookTitleCleaner.resolveCleanBookTitle("Audiobooks/Night Lords/[01] Soul Hunter.m4b", "Night Lords")
+    assertEquals("Soul Hunter", book5)
+
+    // Verify isGenericTrackName
+    assertTrue(BookTitleCleaner.isGenericTrackName("Chapter 1"))
+    assertTrue(BookTitleCleaner.isGenericTrackName("Track 02"))
+    assertTrue(BookTitleCleaner.isGenericTrackName("01"))
+    assertTrue(BookTitleCleaner.isGenericTrackName("Part 3"))
+    assertTrue(BookTitleCleaner.isGenericTrackName("Disc 1"))
+    assertFalse(BookTitleCleaner.isGenericTrackName("Soul Hunter"))
+    assertFalse(BookTitleCleaner.isGenericTrackName("The Hobbit"))
+  }
+
+  @Test
+  fun testEpubStructureParserWithIsbnMetadata() {
+    val baos = ByteArrayOutputStream()
+    ZipOutputStream(baos).use { zos ->
+      zos.putNextEntry(ZipEntry("META-INF/container.xml"))
+      zos.write("""<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>""".toByteArray())
+      zos.closeEntry()
+
+      zos.putNextEntry(ZipEntry("content.opf"))
+      val opf = """
+        <package>
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:title>Soul Hunter</dc:title>
+            <dc:creator>Aaron Dembski-Bowden</dc:creator>
+            <dc:identifier id="BookId">urn:isbn:978-1-84416-860-6</dc:identifier>
+          </metadata>
+          <manifest>
+            <item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine>
+            <itemref idref="c1"/>
+          </spine>
+        </package>
+      """.trimIndent()
+      zos.write(opf.toByteArray())
+      zos.closeEntry()
+
+      zos.putNextEntry(ZipEntry("ch1.xhtml"))
+      zos.write("""<html><body><h1>Prologue</h1><p>The stars were cold and unforgiving in the depths of space, watching silently over the fleet.</p></body></html>""".toByteArray())
+      zos.closeEntry()
+    }
+
+    val book = EpubStructureParser.parse(ByteArrayInputStream(baos.toByteArray()))
+    assertEquals("Soul Hunter", book.title)
+    assertEquals("Aaron Dembski-Bowden", book.author)
+    assertEquals("978-1-84416-860-6", book.isbn)
+    assertEquals(1, book.chapters.size)
   }
 }

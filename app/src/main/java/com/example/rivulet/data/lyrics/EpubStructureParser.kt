@@ -10,6 +10,7 @@ data class EpubBook(
   val title: String,
   val author: String,
   val chapters: List<EpubChapter>,
+  val isbn: String? = null,
 ) {
   val totalWordCount: Int
     get() = chapters.sumOf { it.wordCount }
@@ -86,6 +87,11 @@ object EpubStructureParser {
     val authorMatch = Regex("<dc:creator[^>]*>([^<]+)</dc:creator>", RegexOption.IGNORE_CASE).find(opfXml)
     val bookAuthor = authorMatch?.groupValues?.get(1)?.trim() ?: "Unknown Author"
 
+    val isbn = Regex("<dc:identifier[^>]*>([^<]+)</dc:identifier>", RegexOption.IGNORE_CASE)
+      .findAll(opfXml)
+      .mapNotNull { IsbnValidator.extractFirstValidIsbn(it.groupValues[1]) }
+      .firstOrNull()
+
     // 3. Parse Manifest: ID -> Href
     val manifestMap = HashMap<String, String>() // id to resolved href
     val itemRegex = Regex("<item\\s+([^>]+)>", RegexOption.IGNORE_CASE)
@@ -151,13 +157,14 @@ object EpubStructureParser {
 
     // If spine was empty or failed, fallback
     if (chapters.isEmpty()) {
-      return fallbackExtraction(entries, bookTitle, bookAuthor)
+      return fallbackExtraction(entries, bookTitle, bookAuthor, isbn)
     }
 
     return EpubBook(
       title = bookTitle,
       author = bookAuthor,
       chapters = chapters,
+      isbn = isbn,
     )
   }
 
@@ -212,6 +219,7 @@ object EpubStructureParser {
     entries: Map<String, ByteArray>,
     fallbackTitle: String = "Imported Ebook",
     fallbackAuthor: String = "Unknown Author",
+    isbn: String? = null,
   ): EpubBook {
     val chapters = ArrayList<EpubChapter>()
     var idx = 1
@@ -241,6 +249,11 @@ object EpubStructureParser {
       }
     }
 
-    return EpubBook(fallbackTitle, fallbackAuthor, chapters)
+    return EpubBook(
+      title = fallbackTitle,
+      author = fallbackAuthor,
+      chapters = chapters,
+      isbn = isbn,
+    )
   }
 }

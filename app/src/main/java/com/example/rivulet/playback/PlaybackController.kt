@@ -137,6 +137,7 @@ class PlaybackController(
   val isLyricsAvailable = MutableStateFlow<Boolean>(false)
   val lyricsSource = MutableStateFlow<TextSyncSource?>(null)
   val companionBookTitle = MutableStateFlow<String?>(null)
+  val companionBookIsbn = MutableStateFlow<String?>(null)
   val activeChapterTitle = MutableStateFlow<String?>(null)
   val alignmentConfidence = MutableStateFlow<Float?>(null)
   val alignmentStrategy = MutableStateFlow<String?>(null)
@@ -679,6 +680,7 @@ class PlaybackController(
           alignmentConfidence.value = alignment.confidence
           alignmentStrategy.value = alignment.strategy.displayName
           allCompanionChapters.value = book.chapters
+          companionBookIsbn.value = book.isbn
 
           loadCompanionChapterForTrack(infoHash, currentFileIndex)
         }
@@ -693,6 +695,7 @@ class PlaybackController(
       try {
         val summary = database.getCompanionBook(infoHash)
         companionBookTitle.value = summary?.title
+        companionBookIsbn.value = summary?.isbn
         if (summary != null) {
           allCompanionChapters.value = database.getAllCompanionChapters(infoHash)
         }

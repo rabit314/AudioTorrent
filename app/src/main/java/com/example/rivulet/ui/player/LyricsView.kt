@@ -1,5 +1,6 @@
 package com.example.rivulet.ui.player
 
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -30,10 +31,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Adjust
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Book
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.FormatQuote
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -59,8 +61,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.rivulet.data.lyrics.EpubChapter
@@ -81,10 +87,11 @@ fun LyricsView(
   source: TextSyncSource?,
   companionBookTitle: String? = null,
   activeChapterTitle: String? = null,
+  isbn: String? = null,
+  cleanBookTitle: String? = null,
   alignmentConfidence: Float? = null,
   alignmentStrategy: String? = null,
   allChapters: List<EpubChapter> = emptyList(),
-  initialSearchQuery: String? = null,
   onSeekToLine: (TimedLine) -> Unit,
   onAdjustSync: (deltaMs: Long) -> Unit,
   onCalibrateSync: (TimedLine) -> Unit = {},
@@ -95,9 +102,9 @@ fun LyricsView(
 ) {
   val listState = rememberLazyListState()
   var userIsInteracting by remember { mutableStateOf(false) }
-  var showZLibBrowser by remember { mutableStateOf(false) }
   var showChapterPicker by remember { mutableStateOf(false) }
   val context = LocalContext.current
+  val clipboardManager = LocalClipboardManager.current
   val scope = rememberCoroutineScope()
 
   val filePicker =
@@ -126,7 +133,7 @@ fun LyricsView(
       }
     }
 
-  // Smooth auto-scroll following the active sentence
+  // Smooth auto-scroll following the active sentence (Spotify-style)
   LaunchedEffect(activeLineIndex) {
     if (activeLineIndex >= 0 && !userIsInteracting && activeLineIndex < lines.size) {
       val targetIndex = (activeLineIndex - 2).coerceAtLeast(0)
@@ -143,6 +150,8 @@ fun LyricsView(
       userIsInteracting = false
     }
   }
+
+  val displayTitle = companionBookTitle ?: cleanBookTitle ?: "Read Along"
 
   Column(
     modifier = modifier.fillMaxSize().background(Color(0xFF0F1115)),
@@ -166,14 +175,15 @@ fun LyricsView(
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(20.dp),
           )
-          Spacer(Modifier.width(6.dp))
+          Spacer(Modifier.width(8.dp))
           Column {
             Text(
-              text = if (!companionBookTitle.isNullOrBlank()) companionBookTitle else "Read Along",
+              text = displayTitle,
               style = MaterialTheme.typography.titleSmall,
               fontWeight = FontWeight.Bold,
               color = Color.White,
               maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
             )
             if (!activeChapterTitle.isNullOrBlank()) {
               Text(
@@ -181,12 +191,13 @@ fun LyricsView(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
               )
             }
           }
         }
 
-        // Sync adjustment buttons
+        // Sync micro-adjustment buttons (-0.5s / +0.5s)
         Row(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -224,7 +235,7 @@ fun LyricsView(
         }
       }
 
-      // Secondary row: Match Confidence / Source Pill & Actions
+      // Secondary row: Source Pill, Verified ISBN Chip & Chapter Actions
       Row(
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -233,6 +244,7 @@ fun LyricsView(
         Row(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.weight(1f, fill = false),
         ) {
           if (source != null) {
             Surface(
@@ -245,6 +257,29 @@ fun LyricsView(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
               )
+            }
+          }
+
+          // Verified ISBN Chip
+          if (!isbn.isNullOrBlank()) {
+            Surface(
+              color = Color(0xFF1B5E20).copy(alpha = 0.35f),
+              shape = RoundedCornerShape(6.dp),
+            ) {
+              Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+              ) {
+                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(11.dp))
+                Spacer(Modifier.width(3.dp))
+                Text(
+                  "ISBN $isbn",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color(0xFFA5D6A7),
+                  fontWeight = FontWeight.Medium,
+                  fontSize = 10.sp,
+                )
+              }
             }
           }
 
@@ -273,7 +308,7 @@ fun LyricsView(
           }
         }
 
-        // Action icons: Chapter picker & Web companion
+        // Action icons: Chapter picker & Attach file
         Row(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -293,18 +328,6 @@ fun LyricsView(
           }
 
           IconButton(
-            onClick = { showZLibBrowser = true },
-            modifier = Modifier.size(30.dp),
-          ) {
-            Icon(
-              Icons.Default.Language,
-              contentDescription = "Search zlib.li",
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(18.dp),
-            )
-          }
-
-          IconButton(
             onClick = { filePicker.launch(arrayOf("*/*")) },
             modifier = Modifier.size(30.dp),
           ) {
@@ -320,6 +343,7 @@ fun LyricsView(
     }
 
     if (lines.isEmpty()) {
+      // Empty State: Spotify-style clean card with book name and attach action
       Box(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         contentAlignment = Alignment.Center,
@@ -339,46 +363,76 @@ fun LyricsView(
               modifier = Modifier.size(48.dp),
               tint = MaterialTheme.colorScheme.primary,
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
             Text(
-              "No Companion Book Attached",
+              displayTitle,
               style = MaterialTheme.typography.titleMedium,
               fontWeight = FontWeight.Bold,
               color = Color.White,
+              textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(6.dp))
+
+            if (!isbn.isNullOrBlank()) {
+              Surface(
+                color = Color(0xFF1B5E20).copy(alpha = 0.35f),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.padding(bottom = 6.dp),
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                ) {
+                  Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(12.dp))
+                  Spacer(Modifier.width(4.dp))
+                  Text(
+                    "Verified ISBN: $isbn",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFA5D6A7),
+                    fontWeight = FontWeight.Bold,
+                  )
+                }
+              }
+            }
+
             Text(
-              "Read along as the narrator speaks. You can search zlib.li for the ebook, or attach an EPUB/TXT from your phone.",
+              "Follow along sentence-by-sentence with synced text. Attach an EPUB or TXT file to auto-align chapters with your audiobook.",
               style = MaterialTheme.typography.bodySmall,
               color = Color.Gray,
-              textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+              textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(20.dp))
 
             // Action Buttons
             FilledTonalButton(
-              onClick = { showZLibBrowser = true },
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
-              Spacer(Modifier.width(8.dp))
-              Text("Search zlib.li Web Companion")
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            OutlinedButton(
               onClick = { filePicker.launch(arrayOf("*/*")) },
               modifier = Modifier.fillMaxWidth(),
             ) {
               Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
               Spacer(Modifier.width(8.dp))
-              Text("Attach Local EPUB / Lyrics")
+              Text("Attach Companion Book (EPUB / TXT)")
+            }
+
+            if (!cleanBookTitle.isNullOrBlank()) {
+              Spacer(Modifier.height(8.dp))
+              OutlinedButton(
+                onClick = {
+                  clipboardManager.setText(AnnotatedString(cleanBookTitle))
+                  Toast.makeText(context, "Copied \"$cleanBookTitle\" to clipboard", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
+              ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Copy Book Title (\"$cleanBookTitle\")", fontSize = 12.sp)
+              }
             }
           }
         }
       }
     } else {
+      // Pure Spotify-Style Scrolling Lyrics
       LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -426,7 +480,7 @@ fun LyricsView(
               modifier = Modifier.weight(1f),
             )
 
-            // 1-Tap "Sync Here" calibration pill on active or hovered line
+            // 1-Tap "Sync Here" calibration pill on active sentence
             if (isActive) {
               Spacer(Modifier.width(8.dp))
               Surface(
@@ -539,16 +593,5 @@ fun LyricsView(
         Spacer(Modifier.height(24.dp))
       }
     }
-  }
-
-  // Z-Library Web Companion Dialog
-  if (showZLibBrowser) {
-    ZLibBrowserDialog(
-      initialQuery = initialSearchQuery,
-      onDismiss = { showZLibBrowser = false },
-      onBookDownloaded = { bytes, fileName ->
-        onAttachCompanionFile(bytes, fileName)
-      },
-    )
   }
 }

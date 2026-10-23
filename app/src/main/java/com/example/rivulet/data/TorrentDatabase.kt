@@ -17,6 +17,7 @@ data class CompanionBookSummary(
   val fileName: String,
   val totalChapters: Int,
   val createdAt: Long,
+  val isbn: String? = null,
 )
 
 data class SavedTorrent(
@@ -216,7 +217,8 @@ class TorrentDatabase(context: Context) :
         author TEXT,
         file_name TEXT,
         total_chapters INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        isbn TEXT
       )
       """.trimIndent()
     )
@@ -359,6 +361,11 @@ class TorrentDatabase(context: Context) :
           """.trimIndent()
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_comp_chap_hash_file ON companion_chapters(info_hash, mapped_file_index)")
+      }
+    }
+    if (oldVersion < 7) {
+      runCatching {
+        db.execSQL("ALTER TABLE companion_books ADD COLUMN isbn TEXT")
       }
     }
   }
@@ -1052,6 +1059,7 @@ class TorrentDatabase(context: Context) :
         put("file_name", fileName)
         put("total_chapters", book.chapters.size)
         put("created_at", now)
+        if (book.isbn != null) put("isbn", book.isbn) else putNull("isbn")
       }
       db.insertWithOnConflict("companion_books", null, bookCv, SQLiteDatabase.CONFLICT_REPLACE)
 
@@ -1086,7 +1094,7 @@ class TorrentDatabase(context: Context) :
     try {
       readableDatabase.query(
         "companion_books",
-        arrayOf("info_hash", "title", "author", "file_name", "total_chapters", "created_at"),
+        arrayOf("info_hash", "title", "author", "file_name", "total_chapters", "created_at", "isbn"),
         "info_hash = ?",
         arrayOf(infoHash),
         null,
@@ -1101,6 +1109,7 @@ class TorrentDatabase(context: Context) :
             fileName = cursor.getString(3) ?: "book.epub",
             totalChapters = cursor.getInt(4),
             createdAt = cursor.getLong(5),
+            isbn = if (cursor.columnCount > 6) cursor.getString(6) else null,
           )
         }
       }
@@ -1230,6 +1239,6 @@ class TorrentDatabase(context: Context) :
   companion object {
     private const val TAG = "RivuletDB"
     private const val DATABASE_NAME = "rivulet.db"
-    private const val DATABASE_VERSION = 6
+    private const val DATABASE_VERSION = 7
   }
 }

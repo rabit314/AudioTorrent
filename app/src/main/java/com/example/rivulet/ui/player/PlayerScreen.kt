@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.rivulet.AppContainer
+import com.example.rivulet.data.lyrics.BookTitleCleaner
 import com.example.rivulet.ui.formatDuration
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -92,6 +93,7 @@ fun PlayerScreen(
   val isLyricsAvailable by container.playback.isLyricsAvailable.collectAsStateWithLifecycle()
   val lyricsSource by container.playback.lyricsSource.collectAsStateWithLifecycle()
   val companionBookTitle by container.playback.companionBookTitle.collectAsStateWithLifecycle()
+  val companionBookIsbn by container.playback.companionBookIsbn.collectAsStateWithLifecycle()
   val activeChapterTitle by container.playback.activeChapterTitle.collectAsStateWithLifecycle()
   val alignmentConfidence by container.playback.alignmentConfidence.collectAsStateWithLifecycle()
   val alignmentStrategy by container.playback.alignmentStrategy.collectAsStateWithLifecycle()
@@ -361,8 +363,9 @@ fun PlayerScreen(
           )
           Spacer(Modifier.width(10.dp))
           Column(modifier = Modifier.weight(1f)) {
+            val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
             Text(
-              if (!companionBookTitle.isNullOrBlank()) "Read Along · $companionBookTitle" else "Read Along (Lyrics)",
+              if (!companionBookTitle.isNullOrBlank()) "Read Along · $companionBookTitle" else "Read Along · $cleanBook",
               style = MaterialTheme.typography.labelMedium,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.primary,
@@ -371,7 +374,7 @@ fun PlayerScreen(
             )
             val activeLine = activeWindowLines.getOrNull(activeLineIndex)
             Text(
-              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Tap to attach ebook or search zlib.li",
+              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Tap to attach companion book (EPUB / TXT)",
               style = MaterialTheme.typography.bodySmall,
               color = if (activeLine != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
               maxLines = 1,
@@ -727,6 +730,7 @@ fun PlayerScreen(
       sheetState = sheetState,
       containerColor = Color(0xFF0F1115),
     ) {
+      val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
       LyricsView(
         lines = activeWindowLines,
         activeLineIndex = activeLineIndex,
@@ -734,10 +738,11 @@ fun PlayerScreen(
         source = lyricsSource,
         companionBookTitle = companionBookTitle,
         activeChapterTitle = activeChapterTitle,
+        isbn = companionBookIsbn,
+        cleanBookTitle = cleanBook,
         alignmentConfidence = alignmentConfidence,
         alignmentStrategy = alignmentStrategy,
         allChapters = allCompanionChapters,
-        initialSearchQuery = state.subtitle.ifBlank { state.title },
         onSeekToLine = { line -> container.playback.seekToLine(line) },
         onAdjustSync = { delta -> container.playback.adjustSyncOffset(delta) },
         onCalibrateSync = { line -> container.playback.calibrateSyncToLine(line) },
