@@ -1,0 +1,25 @@
+*.iml
+.gradle/
+/local.properties
+local.properties
+/.idea/
+.DS_Store
+/build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# APK and bundle exports
+*.apk
+*.ap_
+*.aab
+
+# Private local and release signing credentials
+/keystore/
+/keystore.properties
+*.jks
+*.keystore
+
+# System and logs
+*.log
