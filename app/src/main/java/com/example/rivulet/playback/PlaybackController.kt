@@ -510,6 +510,31 @@ class PlaybackController(
     }
   }
 
+  fun pause() {
+    if (player.isPlaying) {
+      lastPauseTimeMs = System.currentTimeMillis()
+      player.pause()
+      saveCurrentPosition()
+    }
+  }
+
+  fun resume() {
+    if (!player.isPlaying) {
+      if (player.playbackState == Player.STATE_ENDED) {
+        player.seekTo(0L)
+      }
+      if (lastPauseTimeMs > 0L) {
+        val pauseDurationMs = System.currentTimeMillis() - lastPauseTimeMs
+        if (pauseDurationMs > 60_000L) {
+          val rewindSec = ((pauseDurationMs / 60_000L) * 3L).coerceIn(5L, 10L)
+          seekBy(-rewindSec * 1000L)
+        }
+        lastPauseTimeMs = 0L
+      }
+      player.play()
+    }
+  }
+
   fun seekTo(positionMs: Long) {
     val duration = player.duration
     val max = if (duration > 0 && duration != C.TIME_UNSET) duration else positionMs
