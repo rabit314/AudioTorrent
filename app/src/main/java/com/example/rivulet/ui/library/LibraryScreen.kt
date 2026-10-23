@@ -79,6 +79,7 @@ import com.example.rivulet.data.audiobookbay.AudioBookItem
 import com.example.rivulet.ui.formatBytes
 import com.example.rivulet.ui.formatDuration
 import com.example.rivulet.ui.formatRate
+import com.example.rivulet.ui.main.AboutDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,6 +107,7 @@ fun LibraryScreen(
   var filterOfflineOnly by remember { mutableStateOf(false) }
 
   var showAddDialog by remember { mutableStateOf(false) }
+  var showAboutDialog by remember { mutableStateOf(false) }
   var deleteCandidate by remember { mutableStateOf<TorrentUi?>(null) }
   var deleteDiskFiles by remember { mutableStateOf(false) }
   var magnet by remember { mutableStateOf("") }
@@ -189,6 +191,15 @@ fun LibraryScreen(
     modifier = modifier.safeDrawingPadding(),
     topBar = {
       TopAppBar(
+        navigationIcon = {
+          IconButton(onClick = { showAboutDialog = true }) {
+            Icon(
+              Icons.Default.Menu,
+              contentDescription = "About AudioTorrent",
+              tint = MaterialTheme.colorScheme.onSurface,
+            )
+          }
+        },
         title = {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Image(
@@ -599,6 +610,12 @@ fun LibraryScreen(
       title = { Text("Notice") },
       text = { Text(message) },
       confirmButton = { TextButton(onClick = { error = null }) { Text("OK") } },
+    )
+  }
+
+  if (showAboutDialog) {
+    AboutDialog(
+      onDismiss = { showAboutDialog = false },
     )
   }
 }
