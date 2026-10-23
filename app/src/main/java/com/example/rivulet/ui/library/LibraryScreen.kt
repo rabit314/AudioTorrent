@@ -2,6 +2,7 @@ package com.example.rivulet.ui.library
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -60,18 +61,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import com.example.rivulet.data.WishlistBook
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.rivulet.AppContainer
+import com.example.rivulet.R
 import com.example.rivulet.data.ListeningHistoryItem
 import com.example.rivulet.data.TorrentUi
+import com.example.rivulet.data.WishlistBook
 import com.example.rivulet.data.audiobookbay.AudioBookItem
 import com.example.rivulet.ui.formatBytes
 import com.example.rivulet.ui.formatDuration
@@ -187,13 +190,21 @@ fun LibraryScreen(
     topBar = {
       TopAppBar(
         title = {
-          Column {
-            Text("AudioTorrent")
-            Text(
-              "${torrents.size} book${if (torrents.size == 1) "" else "s"} in library · ${formatBytes(totalStorageUsed)}",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+              painter = painterResource(R.drawable.app_logo),
+              contentDescription = "AudioTorrent Icon",
+              modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)),
             )
+            Spacer(Modifier.width(12.dp))
+            Column {
+              Text("AudioTorrent")
+              Text(
+                "${torrents.size} book${if (torrents.size == 1) "" else "s"} in library · ${formatBytes(totalStorageUsed)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
           }
         },
         actions = {
