@@ -23,3 +23,19 @@ captures/
 
 # System and logs
 *.log
+
+# Local tooling caches and exports
+.kotlin/
+/exports/
+.env
+.env.*
+!.env.example
+
+# Private development coordination and historical scratch material
+/AI/
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/PLAN.md
+/scripts/
+/docs/screenshots/

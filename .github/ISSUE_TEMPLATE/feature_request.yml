@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest an improvement to AudioTorrent.
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What problem would this solve?
+      description: Describe the listening task or limitation you run into.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Explain the behavior you would like and any alternatives you have considered.
+    validations:
+      required: true

@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible problem with AudioTorrent.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Explain the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the audio format and download state for playback issues. Use authorized test content.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Device and app version
+      placeholder: Device model, Android version, AudioTorrent version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Remove credentials and private information before sharing.
