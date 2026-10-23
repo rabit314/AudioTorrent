@@ -50,6 +50,7 @@ All milestones from `PLAN.md` and approved `PLAN-002 v1.0` have been implemented
 | TASK-044 | Transactional Cascade Database Cleanup & Safe File Deletion | Implementer | Antigravity (Gemini 3.8 Flash) | COMPLETED | Transactional delete across 7 tables in `TorrentDatabase`; file-specific deletion in `TorrentEngine` | `PLAN-007 v1.0` |
 | TASK-045 | UI Efficiency (Event-driven History) & Open Requirements | Implementer | Antigravity (Gemini 3.8 Flash) | COMPLETED | Removed 350ms history polling; added "Want to Listen" Wishlist shelf & configurable jump intervals | `PLAN-007 v1.0` |
 | TASK-046 | Comprehensive Regression Test Suite & Versioned APK Release | Tester | Antigravity (Gemini 3.8 Flash) | COMPLETED | 34 unit tests passed (0 failures); compiled `0.2.0-beta` (versionCode 3); deployed and running on Redmi 10 (PID 9253) | `PLAN-007 v1.0` |
+| TASK-047 | Strict Audiobook Filtering & Non-Audio Media Blocker | Implementer / Tester | Antigravity (Gemini 3.8 Flash) | COMPLETED | Added `isLikelyAudioBook` regex/format filter; eliminated TV/movie torrent leaks; 3 unit tests added; verified on Redmi 10 | `PLAN-007 v1.0` |
 
 ## Task Summary
-Roadmaps v1 (`PLAN-002`), v2 (`PLAN-003`), v3 (`PLAN-004`), v4 (`PLAN-005 v3.0`), v5 (`PLAN-006 v4.0`), and v6 (`PLAN-007 v1.0`) fully implemented, tested, and verified on device. 34 unit tests pass, zero lint errors, and APK exported to `Rivulet.apk` (58.1 MB).
+Roadmaps v1 (`PLAN-002`), v2 (`PLAN-003`), v3 (`PLAN-004`), v4 (`PLAN-005 v3.0`), v5 (`PLAN-006 v4.0`), and v6 (`PLAN-007 v1.0`) fully implemented, tested, and verified on device. 37 unit tests pass, zero lint errors, and APK exported to `AudioTorrent.apk`. TV/video release leak resolved and verified live on Redmi 10.

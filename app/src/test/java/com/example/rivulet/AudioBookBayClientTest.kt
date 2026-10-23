@@ -3,6 +3,7 @@ package com.example.rivulet
 import com.example.rivulet.data.audiobookbay.AudioBookBayClient
 import com.example.rivulet.data.audiobookbay.AudioBookItem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -87,5 +88,77 @@ class AudioBookBayClientTest {
     assertEquals("fiction", client.categoryToSlug("Fiction"))
     assertEquals("non-fiction", client.categoryToSlug("Non-Fiction"))
     assertEquals("action-adventure", client.categoryToSlug("Action"))
+  }
+
+  @Test
+  fun testIsLikelyAudioBook_FiltersVideoReleases() {
+    val client = AudioBookBayClient()
+
+    // TV episodes and Web-DLs reported by user
+    assertFalse(client.isLikelyAudioBook("VisionQuest S01E05 Firewall 1080p WEB-DL", "MKV", "TV Shows"))
+    assertFalse(client.isLikelyAudioBook("Tulsa King S04E07 Blind Rooster 1080p", "MP4", ""))
+    assertFalse(client.isLikelyAudioBook("Breaking Bad S05E16 720p HDTV x264", "AVI", "Television"))
+    assertFalse(client.isLikelyAudioBook("Oppenheimer 2023 2160p UHD Remux HEVC", "MKV", "Movies"))
+    assertFalse(client.isLikelyAudioBook("Attack on Titan S04 1080p WEBRip x265", "MKV", "Anime"))
+
+    // Non-audio format indicators
+    assertFalse(client.isLikelyAudioBook("Some Title", "MKV", "Audio Books"))
+    assertFalse(client.isLikelyAudioBook("Some Title", "AVI", "Audio Books"))
+    assertFalse(client.isLikelyAudioBook("Some Book", "EPUB", "E-Books"))
+    assertFalse(client.isLikelyAudioBook("Some Graphic Novel.cbr", "CBR", "Comics"))
+  }
+
+  @Test
+  fun testIsLikelyAudioBook_AcceptsLegitimateAudiobooks() {
+    val client = AudioBookBayClient()
+
+    assertTrue(client.isLikelyAudioBook("Victoria Station season 1 - Steve Chambers", "M4B", "Historical Fiction"))
+    assertTrue(client.isLikelyAudioBook("Dune - Frank Herbert", "MP3", "Sci-Fi"))
+    assertTrue(client.isLikelyAudioBook("The Lord of the Rings - J.R.R. Tolkien", "M4B", "Fantasy"))
+    assertTrue(client.isLikelyAudioBook("1984 - George Orwell", "FLAC", "Fiction"))
+    assertTrue(client.isLikelyAudioBook("Project Hail Mary - Andy Weir (Unabridged)", "AAC", "Sci-Fi"))
+    assertTrue(client.isLikelyAudioBook("Doctor Who: Audio Drama - Episode 1", "MP3", "Radio Productions"))
+  }
+
+  @Test
+  fun testParseListHtml_FiltersOutVideoTorrents() {
+    val client = AudioBookBayClient()
+    val mixedHtml = """
+      <div class="post">
+        <div class="postTitle"><h2><a href="/abss/victoria-station-season-1-steve-chambers/">Victoria Station season 1 - Steve Chambers</a></h2></div>
+        <div class="postInfo">Category: Historical Fiction<br />Language: English<br /></div>
+        <div class="postContent">
+          <p>Posted: 23 Oct 2026<br />Format: M4B<br />File Size: 193 MBs</p>
+        </div>
+      </div>
+      <div class="post">
+        <div class="postTitle"><h2><a href="/abss/visionquest-s01e05-firewall-1080p/">VisionQuest S01E05 Firewall 1080p WEB-DL</a></h2></div>
+        <div class="postInfo">Category: TV Shows<br />Language: English<br /></div>
+        <div class="postContent">
+          <p>Posted: 23 Oct 2026<br />Format: MKV<br />File Size: 1.2 GBs</p>
+        </div>
+      </div>
+      <div class="post">
+        <div class="postTitle"><h2><a href="/abss/tulsa-king-s04e07-blind-rooster-1080p/">Tulsa King S04E07 Blind Rooster 1080p</a></h2></div>
+        <div class="postInfo">Category: Video<br />Language: English<br /></div>
+        <div class="postContent">
+          <p>Posted: 23 Oct 2026<br />Format: MP4 Video<br />File Size: 950 MBs</p>
+        </div>
+      </div>
+      <div class="post">
+        <div class="postTitle"><h2><a href="/abss/dune-frank-herbert/">Dune - Frank Herbert</a></h2></div>
+        <div class="postInfo">Category: Sci-Fi<br />Language: English<br /></div>
+        <div class="postContent">
+          <p>Posted: 23 Oct 2026<br />Format: MP3<br />File Size: 650 MBs</p>
+        </div>
+      </div>
+    """.trimIndent()
+
+    val items = client.parseListHtml(mixedHtml)
+
+    // Should only contain Victoria Station and Dune
+    assertEquals(2, items.size)
+    assertEquals("Victoria Station season 1 - Steve Chambers", items[0].title)
+    assertEquals("Dune - Frank Herbert", items[1].title)
   }
 }

@@ -1,6 +1,6 @@
-# Handoff — PLAN-007 v1.0 Stabilization, Architecture Hardening & Device Verification
+# Handoff — Strict Audiobook Filtering & Non-Audio Media Blocker (TASK-047)
 
-**When:** 2026-10-23T20:46:00+06:00 (Asia/Dhaka)  
+**When:** 2026-10-23T21:26:00+06:00 (Asia/Dhaka)  
 **Agent:** Antigravity  
 **Model:** Gemini 3.8 Flash (Google)  
 **Provider:** Google  
@@ -9,7 +9,17 @@
 **Status:** COMPLETED & VERIFIED ON REDMI 10 DEVICE
 
 ## Operational Status
-All 8 components from the audit roadmap (`c:\Users\ASUS\Downloads\PLAN.md` / `PLAN-007 v1.0`) have been implemented, tested, and verified on a connected Android 13 device (Redmi 10 / selene).
+Non-audio media, TV show web-rips (e.g., "VisionQuest S01E05", "Tulsa King S04E07"), movies, and non-audio formats (`MKV`, `AVI`, `EPUB`, `CBR`) have been completely filtered from AudiobookBay scraping feeds.
+
+### 1. Build & Test Metrics
+- **Android Lint**: `./gradlew.bat lintDebug` passed with **0 errors**.
+- **Unit Tests**: `./gradlew.bat test` — **37 passed, 0 failures, 0 errors, 0 skipped**.
+- **APK Release**: Exported to `AudioTorrent.apk`.
+
+### 2. Live Runtime Verification on Device
+- Deployed via streamed ADB install to connected Redmi 10 (selene / Android 13).
+- Verified via live screenshot (`audiotorrent_home.png`) that "Trending on AudiobookBay" displays only legitimate audiobooks.
+- Zero TV/movie/video entries leak into Trending, Category browse, or Search feeds.
 
 ### 1. Build & Lint Metrics
 - **Android Lint**: `./gradlew.bat lintDebug` passed cleanly with **0 errors** (all 8 `@UnstableApi` usages marked with `@OptIn(UnstableApi::class)` and `asIterator()` replaced with API 26-compatible collection iteration).

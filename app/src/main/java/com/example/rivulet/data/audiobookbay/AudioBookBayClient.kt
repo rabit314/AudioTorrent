@@ -189,6 +189,10 @@ class AudioBookBayClient(
       val category = postInfoText.substringAfter("Category:").substringBefore("Language:").trim()
       val language = postInfoText.substringAfter("Language:").substringBefore("Keywords:").trim()
 
+      if (!isLikelyAudioBook(title = rawTitle, format = format, category = category)) {
+        continue
+      }
+
       items.add(
         AudioBookItem(
           title = cleanTitle(rawTitle),
@@ -283,6 +287,44 @@ class AudioBookBayClient(
     )
   }
 
+  fun isLikelyAudioBook(
+    title: String,
+    format: String = "",
+    category: String = ""
+  ): Boolean {
+    val cleanT = title.trim()
+    val cleanF = format.trim().lowercase()
+    val cleanC = category.trim().lowercase()
+
+    // 1. Filter out known non-audio formats
+    for (nonAudio in NON_AUDIO_FORMATS) {
+      if (cleanF.contains(nonAudio)) {
+        return false
+      }
+    }
+
+    // 2. Filter out TV/Video scene release patterns in title
+    for (pattern in VIDEO_PATTERNS) {
+      if (pattern.containsMatchIn(cleanT)) {
+        return false
+      }
+    }
+
+    // 3. Filter out standalone video/ebook file extensions in title
+    if (NON_AUDIO_EXT_REGEX.containsMatchIn(cleanT)) {
+      return false
+    }
+
+    // 4. Filter out non-audiobook categories
+    for (badCat in NON_AUDIO_CATEGORIES) {
+      if (cleanC.contains(badCat) && !cleanC.contains("audiobook") && !cleanC.contains("audio book")) {
+        return false
+      }
+    }
+
+    return true
+  }
+
   private fun cleanTitle(title: String): String {
     // If title is "Book Title - Author Name", keep clean
     return title.replace(Regex("\\s+"), " ").trim()
@@ -305,5 +347,28 @@ class AudioBookBayClient(
     private val DATE_REGEX = Regex("(?i)Posted:\\s*([^/\\n]+?)(?:Format:|$)")
     private val HASH_REGEX = Regex("(?i)\\b[a-f0-9]{40}\\b")
     private val TRACKER_REGEX = Regex("(?i)(udp|https?):\\/\\/[a-z0-9.\\-_]+(:[0-9]+)?\\/[a-z0-9._\\-/?=&%]+")
+
+    private val VIDEO_PATTERNS = listOf(
+      Regex("(?i)\\bS\\d{1,2}\\s*E\\d{1,2}\\b"),
+      Regex("(?i)\\bSeason\\s*\\d+\\s*(Episode|Complete)\\b"),
+      Regex("(?i)\\b(2160p|1080p|1080i|720p|576p|480p|360p)\\b"),
+      Regex("(?i)\\b(4k|uhd)\\b"),
+      Regex("(?i)\\b(web-?dl|web-?rip|bluray|bd-?rip|br-?rip|dvd-?rip|hdtv|pdtv|dsrip|hdrip)\\b"),
+      Regex("(?i)\\b(x264|h\\.?264|avc|x265|h\\.?265|hevc|xvid|divx|av1)\\b"),
+      Regex("(?i)\\b(10-?bit|8-?bit)\\b"),
+      Regex("(?i)\\b(telesync|hdcam|camrip|remux)\\b"),
+      Regex("(?i)\\b(subbed|dubbed|hardsub|softsub|multi-sub|eng-sub)\\b"),
+    )
+
+    private val NON_AUDIO_EXT_REGEX = Regex("(?i)\\.(mkv|avi|wmv|mov|flv|vob|iso|pdf|epub|mobi|azw3|cbr|cbz)\\b")
+
+    private val NON_AUDIO_FORMATS = listOf(
+      "mkv", "avi", "wmv", "mov", "flv", "vob", "iso", "mp4 video", "video",
+      "pdf", "epub", "mobi", "cbr", "cbz", "azw3"
+    )
+
+    private val NON_AUDIO_CATEGORIES = listOf(
+      "tv show", "tv-show", "television", "movie", "film", "anime", "video", "ebook", "e-book", "comic", "magazine"
+    )
   }
 }
