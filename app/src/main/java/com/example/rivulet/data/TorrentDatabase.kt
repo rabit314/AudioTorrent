@@ -5,8 +5,19 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.example.rivulet.data.lyrics.EpubBook
+import com.example.rivulet.data.lyrics.EpubChapter
 import java.util.Calendar
 import java.util.LinkedHashMap
+
+data class CompanionBookSummary(
+  val infoHash: String,
+  val title: String,
+  val author: String,
+  val fileName: String,
+  val totalChapters: Int,
+  val createdAt: Long,
+)
 
 data class SavedTorrent(
   val infoHash: String,
@@ -197,6 +208,34 @@ class TorrentDatabase(context: Context) :
       """.trimIndent()
     )
 
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS companion_books (
+        info_hash TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        author TEXT,
+        file_name TEXT,
+        total_chapters INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+      """.trimIndent()
+    )
+
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS companion_chapters (
+        info_hash TEXT NOT NULL,
+        chapter_index INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        word_count INTEGER NOT NULL,
+        mapped_file_index INTEGER,
+        PRIMARY KEY (info_hash, chapter_index)
+      )
+      """.trimIndent()
+    )
+    db.execSQL("CREATE INDEX IF NOT EXISTS idx_comp_chap_hash_file ON companion_chapters(info_hash, mapped_file_index)")
+
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_playback_updated ON playback_state(updated_at DESC)")
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_torrents_added ON torrents(added_at DESC)")
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_history_played ON playback_history(played_at DESC)")
@@ -291,6 +330,37 @@ class TorrentDatabase(context: Context) :
         )
       }
     }
+    if (oldVersion < 6) {
+      runCatching {
+        db.execSQL(
+          """
+          CREATE TABLE IF NOT EXISTS companion_books (
+            info_hash TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            author TEXT,
+            file_name TEXT,
+            total_chapters INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )
+          """.trimIndent()
+        )
+
+        db.execSQL(
+          """
+          CREATE TABLE IF NOT EXISTS companion_chapters (
+            info_hash TEXT NOT NULL,
+            chapter_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            word_count INTEGER NOT NULL,
+            mapped_file_index INTEGER,
+            PRIMARY KEY (info_hash, chapter_index)
+          )
+          """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_comp_chap_hash_file ON companion_chapters(info_hash, mapped_file_index)")
+      }
+    }
   }
 
   fun saveTorrent(torrent: SavedTorrent) {
@@ -338,6 +408,8 @@ class TorrentDatabase(context: Context) :
       db.delete("playback_history", "info_hash = ?", arrayOf(infoHash))
       db.delete("page_text_cache", "info_hash = ?", arrayOf(infoHash))
       db.delete("wishlist_books", "info_hash = ?", arrayOf(infoHash))
+      db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
+      db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
       db.setTransactionSuccessful()
     } catch (t: Throwable) {
       Log.e(TAG, "Error deleting torrent $infoHash", t)
@@ -955,9 +1027,209 @@ class TorrentDatabase(context: Context) :
     return false
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Companion Book & Synced Chapter Persistence
+  // ---------------------------------------------------------------------------------------------
+
+  fun saveCompanionBook(
+    infoHash: String,
+    book: EpubBook,
+    fileName: String,
+    trackToChapterMap: Map<Int, EpubChapter>,
+  ) {
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      // Clear existing companion data for this torrent
+      db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
+      db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
+
+      val now = System.currentTimeMillis()
+      val bookCv = ContentValues().apply {
+        put("info_hash", infoHash)
+        put("title", book.title)
+        put("author", book.author)
+        put("file_name", fileName)
+        put("total_chapters", book.chapters.size)
+        put("created_at", now)
+      }
+      db.insertWithOnConflict("companion_books", null, bookCv, SQLiteDatabase.CONFLICT_REPLACE)
+
+      // Inverse map: chapter index -> mapped fileIndex
+      val chapterToFileIndex = HashMap<Int, Int>()
+      for ((fIndex, chapter) in trackToChapterMap) {
+        chapterToFileIndex[chapter.index] = fIndex
+      }
+
+      for (chapter in book.chapters) {
+        val mappedFile = chapterToFileIndex[chapter.index]
+        val chapCv = ContentValues().apply {
+          put("info_hash", infoHash)
+          put("chapter_index", chapter.index)
+          put("title", chapter.title)
+          put("content", chapter.text)
+          put("word_count", chapter.wordCount)
+          if (mappedFile != null) put("mapped_file_index", mappedFile) else putNull("mapped_file_index")
+        }
+        db.insertWithOnConflict("companion_chapters", null, chapCv, SQLiteDatabase.CONFLICT_REPLACE)
+      }
+
+      db.setTransactionSuccessful()
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error saving companion book for $infoHash", t)
+    } finally {
+      db.endTransaction()
+    }
+  }
+
+  fun getCompanionBook(infoHash: String): CompanionBookSummary? {
+    try {
+      readableDatabase.query(
+        "companion_books",
+        arrayOf("info_hash", "title", "author", "file_name", "total_chapters", "created_at"),
+        "info_hash = ?",
+        arrayOf(infoHash),
+        null,
+        null,
+        null
+      ).use { cursor ->
+        if (cursor.moveToFirst()) {
+          return CompanionBookSummary(
+            infoHash = cursor.getString(0),
+            title = cursor.getString(1),
+            author = cursor.getString(2) ?: "Unknown Author",
+            fileName = cursor.getString(3) ?: "book.epub",
+            totalChapters = cursor.getInt(4),
+            createdAt = cursor.getLong(5),
+          )
+        }
+      }
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error getting companion book $infoHash", t)
+    }
+    return null
+  }
+
+  fun getCompanionChapterForTrack(infoHash: String, fileIndex: Int): EpubChapter? {
+    try {
+      // 1. Direct mapped file index lookup
+      readableDatabase.query(
+        "companion_chapters",
+        arrayOf("chapter_index", "title", "content", "word_count"),
+        "info_hash = ? AND mapped_file_index = ?",
+        arrayOf(infoHash, fileIndex.toString()),
+        null,
+        null,
+        "chapter_index ASC",
+        "1"
+      ).use { cursor ->
+        if (cursor.moveToFirst()) {
+          val idx = cursor.getInt(0)
+          return EpubChapter(
+            index = idx,
+            id = "db_ch_$idx",
+            href = "ch_$idx.xhtml",
+            title = cursor.getString(1),
+            text = cursor.getString(2),
+            wordCount = cursor.getInt(3),
+          )
+        }
+      }
+
+      // 2. Fallback: match by natural 1-based index (fileIndex + 1)
+      readableDatabase.query(
+        "companion_chapters",
+        arrayOf("chapter_index", "title", "content", "word_count"),
+        "info_hash = ? AND chapter_index = ?",
+        arrayOf(infoHash, (fileIndex + 1).toString()),
+        null,
+        null,
+        null
+      ).use { cursor ->
+        if (cursor.moveToFirst()) {
+          val idx = cursor.getInt(0)
+          return EpubChapter(
+            index = idx,
+            id = "db_ch_$idx",
+            href = "ch_$idx.xhtml",
+            title = cursor.getString(1),
+            text = cursor.getString(2),
+            wordCount = cursor.getInt(3),
+          )
+        }
+      }
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error getting companion chapter for $infoHash track $fileIndex", t)
+    }
+    return null
+  }
+
+  fun getAllCompanionChapters(infoHash: String): List<EpubChapter> {
+    val list = ArrayList<EpubChapter>()
+    try {
+      readableDatabase.query(
+        "companion_chapters",
+        arrayOf("chapter_index", "title", "content", "word_count"),
+        "info_hash = ?",
+        arrayOf(infoHash),
+        null,
+        null,
+        "chapter_index ASC"
+      ).use { cursor ->
+        while (cursor.moveToNext()) {
+          val idx = cursor.getInt(0)
+          list.add(
+            EpubChapter(
+              index = idx,
+              id = "db_ch_$idx",
+              href = "ch_$idx.xhtml",
+              title = cursor.getString(1),
+              text = cursor.getString(2),
+              wordCount = cursor.getInt(3),
+            )
+          )
+        }
+      }
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error getting all companion chapters $infoHash", t)
+    }
+    return list
+  }
+
+  fun updateChapterTrackMapping(infoHash: String, chapterIndex: Int, fileIndex: Int) {
+    try {
+      val cv = ContentValues().apply {
+        put("mapped_file_index", fileIndex)
+      }
+      writableDatabase.update(
+        "companion_chapters",
+        cv,
+        "info_hash = ? AND chapter_index = ?",
+        arrayOf(infoHash, chapterIndex.toString())
+      )
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error updating chapter mapping for $infoHash ch $chapterIndex", t)
+    }
+  }
+
+  fun deleteCompanionBook(infoHash: String) {
+    val db = writableDatabase
+    db.beginTransaction()
+    try {
+      db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
+      db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
+      db.delete("page_text_cache", "info_hash = ?", arrayOf(infoHash))
+      db.setTransactionSuccessful()
+    } catch (t: Throwable) {
+      Log.e(TAG, "Error deleting companion book $infoHash", t)
+    } finally {
+      db.endTransaction()
+    }
+  }
+
   companion object {
     private const val TAG = "RivuletDB"
     private const val DATABASE_NAME = "rivulet.db"
-    private const val DATABASE_VERSION = 5
+    private const val DATABASE_VERSION = 6
   }
 }

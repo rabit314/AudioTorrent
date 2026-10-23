@@ -14,8 +14,12 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.BookmarkEntry
 import com.example.rivulet.data.TorrentDatabase
+import com.example.rivulet.data.lyrics.AudioBookAligner
+import com.example.rivulet.data.lyrics.EpubChapter
+import com.example.rivulet.data.lyrics.EpubExtractor
 import com.example.rivulet.data.lyrics.LrcParser
 import com.example.rivulet.data.lyrics.PageTextManager
 import com.example.rivulet.data.lyrics.PacedTimingEngine
@@ -132,6 +136,11 @@ class PlaybackController(
   val currentSyncOffsetMs = MutableStateFlow<Long>(0L)
   val isLyricsAvailable = MutableStateFlow<Boolean>(false)
   val lyricsSource = MutableStateFlow<TextSyncSource?>(null)
+  val companionBookTitle = MutableStateFlow<String?>(null)
+  val activeChapterTitle = MutableStateFlow<String?>(null)
+  val alignmentConfidence = MutableStateFlow<Float?>(null)
+  val alignmentStrategy = MutableStateFlow<String?>(null)
+  val allCompanionChapters = MutableStateFlow<List<EpubChapter>>(emptyList())
 
   init {
     // Prime state with latest played audiobook from history
@@ -446,6 +455,9 @@ class PlaybackController(
     }
 
     refreshBookmarks()
+    if (infoHash != null && fileIndex >= 0) {
+      loadCompanionChapterForTrack(infoHash, fileIndex)
+    }
 
     player.prepare()
     if (effectivePos > 0L) {
@@ -644,11 +656,99 @@ class PlaybackController(
       else -> PacedTimingEngine.paceText(text, dur, offsetMs = currentSyncOffsetMs.value)
     }
     if (lines.isNotEmpty()) {
-      pageTextManager.setSourceLines(lines, source)
+      pageTextManager.setSourceLines(lines, source, currentInfoHash, currentFileIndex)
       isLyricsAvailable.value = true
       lyricsSource.value = source
       updateLyricsWindow()
     }
+  }
+
+  fun attachCompanionBook(
+    bytes: ByteArray,
+    fileName: String,
+    infoHash: String,
+    audioFiles: List<AudioFile>,
+  ) {
+    scope.launch(Dispatchers.IO) {
+      try {
+        val book = EpubExtractor.extractBookFromBytes(bytes, fileName)
+        if (book.chapters.isNotEmpty()) {
+          val alignment = AudioBookAligner.align(audioFiles, book)
+          database.saveCompanionBook(infoHash, book, fileName, alignment.trackToChapterMap)
+          companionBookTitle.value = book.title
+          alignmentConfidence.value = alignment.confidence
+          alignmentStrategy.value = alignment.strategy.displayName
+          allCompanionChapters.value = book.chapters
+
+          loadCompanionChapterForTrack(infoHash, currentFileIndex)
+        }
+      } catch (t: Throwable) {
+        Log.e(TAG, "Error attaching companion book $fileName for $infoHash", t)
+      }
+    }
+  }
+
+  fun loadCompanionChapterForTrack(infoHash: String, fileIndex: Int) {
+    scope.launch(Dispatchers.IO) {
+      try {
+        val summary = database.getCompanionBook(infoHash)
+        companionBookTitle.value = summary?.title
+        if (summary != null) {
+          allCompanionChapters.value = database.getAllCompanionChapters(infoHash)
+        }
+
+        val chapter = database.getCompanionChapterForTrack(infoHash, fileIndex)
+        if (chapter != null) {
+          activeChapterTitle.value = chapter.title
+          val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 60_000L
+          val lines = PacedTimingEngine.paceChapter(chapter.text, dur, offsetMs = currentSyncOffsetMs.value)
+          if (lines.isNotEmpty()) {
+            pageTextManager.setSourceLines(lines, TextSyncSource.EPUB_PACED, infoHash, fileIndex)
+            isLyricsAvailable.value = true
+            lyricsSource.value = TextSyncSource.EPUB_PACED
+            withContext(Dispatchers.Main) {
+              updateLyricsWindow()
+            }
+          }
+        } else if (summary != null) {
+          activeChapterTitle.value = null
+        }
+      } catch (t: Throwable) {
+        Log.e(TAG, "Error loading companion chapter for $infoHash file $fileIndex", t)
+      }
+    }
+  }
+
+  fun selectChapterForCurrentTrack(chapter: EpubChapter) {
+    val hash = currentInfoHash ?: return
+    val fIndex = currentFileIndex
+    if (fIndex < 0) return
+    scope.launch(Dispatchers.IO) {
+      try {
+        database.updateChapterTrackMapping(hash, chapter.index, fIndex)
+        activeChapterTitle.value = chapter.title
+        val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 60_000L
+        val lines = PacedTimingEngine.paceChapter(chapter.text, dur, offsetMs = currentSyncOffsetMs.value)
+        if (lines.isNotEmpty()) {
+          pageTextManager.setSourceLines(lines, TextSyncSource.EPUB_PACED, hash, fIndex)
+          isLyricsAvailable.value = true
+          lyricsSource.value = TextSyncSource.EPUB_PACED
+          withContext(Dispatchers.Main) {
+            updateLyricsWindow()
+          }
+        }
+      } catch (t: Throwable) {
+        Log.e(TAG, "Error selecting chapter ${chapter.index} for $hash file $fIndex", t)
+      }
+    }
+  }
+
+  fun calibrateSyncToLine(line: TimedLine) {
+    val currentPos = player.currentPosition
+    // Shift currentSyncOffsetMs so that line.startTimeMs + newOffset == currentPos
+    val newOffset = currentPos - line.startTimeMs
+    currentSyncOffsetMs.value = newOffset
+    updateLyricsWindow()
   }
 
   fun seekToLine(line: TimedLine) {

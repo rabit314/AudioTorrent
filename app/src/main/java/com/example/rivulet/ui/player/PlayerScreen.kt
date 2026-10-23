@@ -91,6 +91,11 @@ fun PlayerScreen(
   val syncOffsetMs by container.playback.currentSyncOffsetMs.collectAsStateWithLifecycle()
   val isLyricsAvailable by container.playback.isLyricsAvailable.collectAsStateWithLifecycle()
   val lyricsSource by container.playback.lyricsSource.collectAsStateWithLifecycle()
+  val companionBookTitle by container.playback.companionBookTitle.collectAsStateWithLifecycle()
+  val activeChapterTitle by container.playback.activeChapterTitle.collectAsStateWithLifecycle()
+  val alignmentConfidence by container.playback.alignmentConfidence.collectAsStateWithLifecycle()
+  val alignmentStrategy by container.playback.alignmentStrategy.collectAsStateWithLifecycle()
+  val allCompanionChapters by container.playback.allCompanionChapters.collectAsStateWithLifecycle()
 
   var dragValue by remember { mutableStateOf<Float?>(null) }
   var showSpeedDialog by remember { mutableStateOf(false) }
@@ -357,14 +362,16 @@ fun PlayerScreen(
           Spacer(Modifier.width(10.dp))
           Column(modifier = Modifier.weight(1f)) {
             Text(
-              "Read Along (Lyrics)",
+              if (!companionBookTitle.isNullOrBlank()) "Read Along · $companionBookTitle" else "Read Along (Lyrics)",
               style = MaterialTheme.typography.labelMedium,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.primary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
             )
             val activeLine = activeWindowLines.getOrNull(activeLineIndex)
             Text(
-              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced lyrics" else "Tap to attach ebook or lyrics",
+              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Tap to attach ebook or search zlib.li",
               style = MaterialTheme.typography.bodySmall,
               color = if (activeLine != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
               maxLines = 1,
@@ -725,10 +732,23 @@ fun PlayerScreen(
         activeLineIndex = activeLineIndex,
         syncOffsetMs = syncOffsetMs,
         source = lyricsSource,
+        companionBookTitle = companionBookTitle,
+        activeChapterTitle = activeChapterTitle,
+        alignmentConfidence = alignmentConfidence,
+        alignmentStrategy = alignmentStrategy,
+        allChapters = allCompanionChapters,
+        initialSearchQuery = state.subtitle.ifBlank { state.title },
         onSeekToLine = { line -> container.playback.seekToLine(line) },
         onAdjustSync = { delta -> container.playback.adjustSyncOffset(delta) },
+        onCalibrateSync = { line -> container.playback.calibrateSyncToLine(line) },
+        onSelectChapter = { chapter -> container.playback.selectChapterForCurrentTrack(chapter) },
         onAttachFileText = { text, source ->
           container.playback.loadLyricsFromText(text, source)
+        },
+        onAttachCompanionFile = { bytes, fileName ->
+          val hash = state.infoHash ?: return@LyricsView
+          val audioFiles = container.engine.torrents.value.firstOrNull { it.infoHash == hash }?.audioFiles ?: emptyList()
+          container.playback.attachCompanionBook(bytes, fileName, hash, audioFiles)
         },
       )
     }
