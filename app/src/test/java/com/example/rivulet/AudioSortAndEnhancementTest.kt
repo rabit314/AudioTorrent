@@ -1,12 +1,70 @@
 package com.example.rivulet
 
+import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.ListeningHistoryItem
 import com.example.rivulet.data.NATURAL_NAME_COMPARATOR
+import com.example.rivulet.data.NATURAL_PATH_COMPARATOR
+import com.example.rivulet.data.TorrentUi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioSortAndEnhancementTest {
+
+  @Test
+  fun testTorrentProviderOriginalOrder_PreservedInAudioFiles() {
+    val f0 = AudioFile(index = 0, path = "Night Lords/[01] Soul Hunter/Soul Hunter.m4b", name = "Soul Hunter.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+    val f1 = AudioFile(index = 1, path = "Night Lords/[02] Blood Reaver/Blood Reaver.m4b", name = "Blood Reaver.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+    val f2 = AudioFile(index = 2, path = "Night Lords/[03] Void Stalker/Void Stalker.m4b", name = "Void Stalker.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+
+    val torrent = TorrentUi(
+      infoHash = "40e9a79d7fe668daf733ca0ea01ce91d945f5ed3",
+      name = "Night Lords",
+      state = "Downloading",
+      progress = 0f,
+      downloadRate = 0L,
+      uploadRate = 0L,
+      peers = 2,
+      seeds = 1,
+      totalBytes = 300L,
+      doneBytes = 0L,
+      hasMetadata = true,
+      files = listOf(f0, f1, f2),
+    )
+
+    // Verify torrent provider's original sequence (index 0, 1, 2) is preserved
+    assertEquals(0, torrent.audioFiles[0].index)
+    assertEquals("Soul Hunter.m4b", torrent.audioFiles[0].name)
+    assertEquals(1, torrent.audioFiles[1].index)
+    assertEquals("Blood Reaver.m4b", torrent.audioFiles[1].name)
+    assertEquals(2, torrent.audioFiles[2].index)
+    assertEquals("Void Stalker.m4b", torrent.audioFiles[2].name)
+  }
+
+  @Test
+  fun testNaturalPathComparatorWithSubfolders() {
+    val f0 = AudioFile(index = 0, path = "Night Lords/[01] Soul Hunter/Soul Hunter.m4b", name = "Soul Hunter.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+    val f1 = AudioFile(index = 1, path = "Night Lords/[02] Blood Reaver/Blood Reaver.m4b", name = "Blood Reaver.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+    val f2 = AudioFile(index = 2, path = "Night Lords/[03] Void Stalker/Void Stalker.m4b", name = "Void Stalker.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+
+    val scrambled = listOf(f2, f0, f1)
+    val sorted = scrambled.sortedWith(NATURAL_PATH_COMPARATOR)
+
+    assertEquals("[01] Soul Hunter", sorted[0].directory)
+    assertEquals("[02] Blood Reaver", sorted[1].directory)
+    assertEquals("[03] Void Stalker", sorted[2].directory)
+  }
+
+  @Test
+  fun testAudioFileDirectoryExtraction() {
+    val nested = AudioFile(index = 0, path = "Night Lords/[01] Soul Hunter/Soul Hunter.m4b", name = "Soul Hunter.m4b", size = 100L, downloadedBytes = 0L, isAudio = true)
+    assertEquals("[01] Soul Hunter", nested.directory)
+    assertEquals("[01] Soul Hunter / Soul Hunter.m4b", nested.displayTitle)
+
+    val flat = AudioFile(index = 1, path = "Dune.mp3", name = "Dune.mp3", size = 100L, downloadedBytes = 0L, isAudio = true)
+    assertEquals("", flat.directory)
+    assertEquals("Dune.mp3", flat.displayTitle)
+  }
 
   @Test
   fun testNaturalAlphanumericSortChapters() {

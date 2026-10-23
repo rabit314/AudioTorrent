@@ -33,6 +33,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -53,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.rivulet.AppContainer
 import com.example.rivulet.data.AudioFile
+import com.example.rivulet.data.NATURAL_PATH_COMPARATOR
 import com.example.rivulet.playback.QueueTrack
 import com.example.rivulet.ui.formatBytes
 import com.example.rivulet.ui.formatDuration
@@ -76,13 +78,13 @@ fun TorrentScreen(
   var showDeleteDialog by remember { mutableStateOf(false) }
   var deleteDiskFiles by remember { mutableStateOf(false) }
   var error by remember { mutableStateOf<String?>(null) }
-  var sortOrder by remember { mutableStateOf(FileSortOrder.NATURAL_NAME) }
+  var sortOrder by remember { mutableStateOf(FileSortOrder.TORRENT_ORDER) }
 
   val sortedFiles = remember(torrent?.audioFiles, sortOrder) {
     val list = torrent?.audioFiles ?: emptyList()
     when (sortOrder) {
-      FileSortOrder.NATURAL_NAME -> list
-      FileSortOrder.ORIGINAL_INDEX -> list.sortedBy { it.index }
+      FileSortOrder.TORRENT_ORDER -> list.sortedBy { it.index }
+      FileSortOrder.NATURAL_PATH -> list.sortedWith(NATURAL_PATH_COMPARATOR)
       FileSortOrder.SIZE_DESC -> list.sortedByDescending { it.size }
     }
   }
@@ -214,14 +216,14 @@ fun TorrentScreen(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
               FilterChip(
-                selected = sortOrder == FileSortOrder.NATURAL_NAME,
-                onClick = { sortOrder = FileSortOrder.NATURAL_NAME },
-                label = { Text("Name") },
+                selected = sortOrder == FileSortOrder.TORRENT_ORDER,
+                onClick = { sortOrder = FileSortOrder.TORRENT_ORDER },
+                label = { Text("Torrent Order") },
               )
               FilterChip(
-                selected = sortOrder == FileSortOrder.ORIGINAL_INDEX,
-                onClick = { sortOrder = FileSortOrder.ORIGINAL_INDEX },
-                label = { Text("Index") },
+                selected = sortOrder == FileSortOrder.NATURAL_PATH,
+                onClick = { sortOrder = FileSortOrder.NATURAL_PATH },
+                label = { Text("Path / Name") },
               )
             }
           }
@@ -246,10 +248,11 @@ fun TorrentScreen(
               scope.launch {
                 preparing = file.index
                 val queueTracks = sortedFiles.map {
+                  val titleText = if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
                   QueueTrack(
                     infoHash = infoHash,
                     fileIndex = it.index,
-                    title = it.name,
+                    title = titleText,
                     subtitle = torrent.name,
                     coverUrl = torrent.coverUrl,
                   )
@@ -331,6 +334,22 @@ private fun FileRow(
       verticalAlignment = Alignment.CenterVertically,
     ) {
       Column(Modifier.weight(1f)) {
+        if (file.directory.isNotBlank()) {
+          Surface(
+            shape = RoundedCornerShape(4.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.padding(bottom = 4.dp),
+          ) {
+            Text(
+              file.directory,
+              modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSecondaryContainer,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
         Text(
           file.name,
           style = MaterialTheme.typography.bodyLarge,
@@ -339,6 +358,7 @@ private fun FileRow(
         )
         Spacer(Modifier.height(4.dp))
         val statusText = buildString {
+          append("#${file.index + 1} · ")
           append(formatBytes(file.size))
           append(" · ${(file.progress * 100).toInt()}%")
           if (file.isDownloaded) {
@@ -385,7 +405,7 @@ private fun FileRow(
 }
 
 enum class FileSortOrder {
-  NATURAL_NAME,
-  ORIGINAL_INDEX,
+  TORRENT_ORDER,
+  NATURAL_PATH,
   SIZE_DESC,
 }

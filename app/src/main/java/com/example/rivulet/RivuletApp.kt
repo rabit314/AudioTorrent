@@ -29,10 +29,11 @@ class AppContainer(context: Context) {
     playback.queueProvider = { infoHash ->
       val torrent = engine.torrents.value.firstOrNull { it.infoHash == infoHash }
       torrent?.audioFiles?.map {
+        val titleText = if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
         com.example.rivulet.playback.QueueTrack(
           infoHash = torrent.infoHash,
           fileIndex = it.index,
-          title = it.name,
+          title = titleText,
           subtitle = torrent.name,
           coverUrl = torrent.coverUrl,
         )
