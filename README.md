@@ -1,50 +1,123 @@
+<div align="center">
+
+<img src="app/src/main/res/drawable/app_logo.png" width="96" height="96" alt="AudioTorrent Logo" />
+
 # AudioTorrent
 
-**An audio-first BitTorrent client for Android.**
+**A high-performance, audio-first BitTorrent streaming client for Android.**
 
-Listen while your audio downloads. Keep your place across chapters, save bookmarks, and download books for offline listening.
+Listen to audiobooks, albums, podcasts, and long-form audio instantly while they download.
 
-![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)
-![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?logo=kotlin&logoColor=white)
-![Status: beta](https://img.shields.io/badge/status-beta-blue)
+[![Latest Release](https://img.shields.io/badge/Release-v0.3.0--beta-00C853?style=flat-square&logo=android&logoColor=white)](https://github.com/rabit314/AudioTorrent/releases/latest)
+[![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B%20(API%2026%2B)-3DDC84?style=flat-square&logo=android&logoColor=white)](https://developer.android.com/about/versions/oreo)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.0%2B-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-UI-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white)](https://developer.android.com/jetpack/compose)
+[![Engine](https://img.shields.io/badge/Torrent-libtorrent4j-orange?style=flat-square)](https://github.com/frostwire/frostwire-jlibtorrent)
+[![Playback](https://img.shields.io/badge/Media-AndroidX%20Media3-informational?style=flat-square)](https://developer.android.com/media/media3)
 
-[Build from source](docs/BUILDING.md) Â· [Architecture](docs/ARCHITECTURE.md) Â· [Contributing](CONTRIBUTING.md) Â· [Report a bug](https://github.com/rabit314/AudioTorrent/issues/new?template=bug_report.yml)
+[Download Beta APK](#-download-beta-release) · [Features](#-features) · [Architecture](docs/ARCHITECTURE.md) · [Building](docs/BUILDING.md) · [Contributing](CONTRIBUTING.md) · [Report Bug](https://github.com/rabit314/AudioTorrent/issues/new?template=bug_report.yml)
 
-## Features
+</div>
 
-- **Stream as you download** â€” open magnet links or `.torrent` files and choose an audio track.
-- **Pick up where you left off** â€” saved listening positions, history, and a Continue Listening shortcut.
-- **Navigate long books** â€” naturally sorted chapter queues, skip controls, and bookmarks with notes.
-- **Listen your way** â€” playback speeds from 0.5Ã— to 3Ã—, silence skipping, voice boost, and a sleep timer with fade-out.
-- **Keep audio available** â€” download individual files or entire torrents for offline playback.
-- **Play in the background** â€” media notifications, lock screen controls, and headset commands through Android Media3.
-- **Follow along** â€” attach LRC, SRT, EPUB, or plain-text companion files. Plain-text timing is estimated.
-- **Find your next listen** â€” AudiobookBay search, trending titles, recent searches, and a Want to Listen shelf.
+---
 
-## Getting started
+## 📥 Download Beta Release
 
-Build and install a debug APK using the [build guide](docs/BUILDING.md). Android 8.0 (API 26) or newer is required; bundled native libraries support `arm64-v8a` and `x86_64` devices.
+Get the latest installable pre-release APK directly for your Android phone or tablet:
 
-1. Tap **+** in the library to paste a magnet link or choose a `.torrent` file. You can also open supported links from another Android app.
-2. Select an audio file to begin playback. Startup and seeking depend on available peers and your connection.
-3. Use the player for chapter navigation, bookmarks, playback speed, and the sleep timer.
+<p align="center">
+  <a href="https://github.com/rabit314/AudioTorrent/releases/download/v0.3.0-beta/AudioTorrent.apk">
+    <img src="https://img.shields.io/badge/Download_APK-AudioTorrent_v0.3.0--beta-00C853?style=for-the-badge&logo=android&logoColor=white" alt="Download AudioTorrent APK" />
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/rabit314/AudioTorrent/releases">
+    <img src="https://img.shields.io/badge/All_Releases-GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="All GitHub Releases" />
+  </a>
+</p>
 
-Audio format support depends on the device's decoders. Discovery depends on a third-party website and may be unavailable if that site changes or requires authentication.
+> [!TIP]
+> **Installation Instructions:**
+> 1. Download **[`AudioTorrent.apk`](https://github.com/rabit314/AudioTorrent/releases/download/v0.3.0-beta/AudioTorrent.apk)** directly to your device.
+> 2. Open the downloaded file. When prompted, allow your browser or file manager to *"Install unknown apps"*.
+> 3. Launch AudioTorrent from your app drawer.
+> 4. **Compatibility**: Requires **Android 8.0 (API 26)** or newer. Bundled native libraries support both **`arm64-v8a`** and **`x86_64`** devices.
 
-## Development
+---
 
-The app uses Kotlin, Jetpack Compose, Media3, libtorrent4j, and SQLite in a single Android module. The Android package and internal project name remain `com.example.rivulet` and `Rivulet`.
+## ✨ Features
 
+- ⚡ **Stream as You Download** — Open magnet links or `.torrent` files and start listening within seconds. A custom loopback HTTP range bridge and dynamic piece scheduler stream files ahead of time while prioritizing MP4 metadata tails.
+- 🎧 **Audiobook-Optimized Playback** — Pick up exactly where you left off. Includes smart pause auto-rewind (rewinds 5–15 seconds when paused for over 60 seconds), configurable speed stepper (0.5× to 3.0× in 0.1× steps), Voice Boost dialogue enhancer, and silence trimming.
+- 🌙 **Sleep Timer with Fade-Out** — Set timers for 15m, 30m, 45m, 60m, custom durations, or until the end of the current track, featuring a gentle 30-second linear volume fade-out.
+- 📑 **Natural Chapter Queuing** — Multi-file audiobooks sort naturally (`Chapter 1`, `Chapter 2`, ..., `Chapter 10`), with seamless auto-advance across tracks, unified chapter drawer, and persistent bookmarks with personal notes.
+- 📚 **Audiobook Discovery** — Built-in AudiobookBay integration with trending feeds, audio-only media filtering, search history, and instant magnet resolution.
+- 📖 **Companion Read-Along (Beta)** — Attach companion EPUB, LRC, SRT, or plain-text files. Features auto-aligned sentence pacing, visual glowing sentence tracking, and 1-tap sync calibration.
+- 💾 **Offline Library Management** — Download individual chapters or entire audio torrents to local storage with automated offline persistence.
+- 🔔 **Media3 Foreground Service** — Complete background audio playback with lock screen album art, interactive notification with live Play/Pause toggles, and Bluetooth headset controls.
+
+---
+
+## 🏗️ Architecture
+
+AudioTorrent is built as a single-module Android application using modern Android Jetpack libraries and native BitTorrent libraries:
+
+```mermaid
+flowchart LR
+    Input["Magnet link / .torrent"] --> Engine["TorrentEngine<br/>(libtorrent4j)"]
+    Engine --> Session["StreamSession<br/>(Priority Window)"]
+    Session --> HTTP["StreamServer<br/>(127.0.0.1 HTTP Range Bridge)"]
+    HTTP --> Player["PlaybackController<br/>(Media3 ExoPlayer)"]
+    Player <--> Service["RivuletMediaService<br/>(MediaSession Service)"]
+    UI["Jetpack Compose UI"] <--> Player
+    UI <--> Engine
+    Engine <--> DB[("SQLite Database")]
+    Player <--> DB
+```
+
+For detailed component documentation, data models, and stream lifecycle behavior, refer to [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md).
+
+---
+
+## 🛠️ Building from Source
+
+### Prerequisites
+- **JDK 17** (configured Java toolchain)
+- **Android SDK Platform 36** and Build Tools
+- A connected Android device or emulator running **Android 8.0+** (`arm64-v8a` or `x86_64`)
+
+### Build Commands
+
+Clone the repository:
 ```bash
 git clone https://github.com/rabit314/AudioTorrent.git
 cd AudioTorrent
-./gradlew :app:assembleDebug
 ```
 
-On Windows, use `.\gradlew.bat :app:assembleDebug`. See [Building](docs/BUILDING.md) for prerequisites, tests, and installation, and [Architecture](docs/ARCHITECTURE.md) for the source map.
+Run tests and assemble the debug APK:
+- **macOS / Linux:**
+  ```bash
+  ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+  ```
 
-## License
+The generated APK will be at `app/build/outputs/apk/debug/app-debug.apk`. For comprehensive build configuration and release signing details, check [**docs/BUILDING.md**](docs/BUILDING.md).
 
-A project license has not yet been specified. Dependencies retain their respective licenses.
+---
 
-Use AudioTorrent with audio you are authorized to download and share.
+## 🤝 Contributing
+
+Contributions, bug reports, and suggestions are welcome!
+- Review [**CONTRIBUTING.md**](CONTRIBUTING.md) for code conventions, workflow, and pull request guidelines.
+- Report issues or request enhancements via [**GitHub Issues**](https://github.com/rabit314/AudioTorrent/issues).
+
+---
+
+## ⚖️ License & Legal Notice
+
+AudioTorrent is distributed as open-source software under its respective project terms. Dependencies retain their individual licenses (AndroidX, Media3, libtorrent4j, Coil, Jsoup, OkHttp).
+
+> [!CAUTION]
+> AudioTorrent is an open-source BitTorrent client designed for public domain, Creative Commons, and legally authorized audio media. Please respect copyright laws and utilize AudioTorrent only with content you have the right to download and stream.

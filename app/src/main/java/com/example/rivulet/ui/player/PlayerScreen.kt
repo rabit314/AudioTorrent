@@ -1,5 +1,6 @@
 package com.example.rivulet.ui.player
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -19,16 +20,24 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -36,9 +45,11 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -46,6 +57,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -250,18 +262,44 @@ fun PlayerScreen(
         horizontalArrangement = Arrangement.Center,
         modifier = Modifier.fillMaxWidth(),
       ) {
-        TextButton(
+        IconButton(
           onClick = { container.playback.playPrevious() },
           enabled = state.hasPrevious || state.positionMs > 3000L,
+          modifier = Modifier.size(44.dp),
         ) {
-          Text("⏮")
+          Icon(
+            Icons.Default.SkipPrevious,
+            contentDescription = "Previous Track",
+            modifier = Modifier.size(30.dp),
+            tint = if (state.hasPrevious || state.positionMs > 3000L) {
+              MaterialTheme.colorScheme.onSurface
+            } else {
+              MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            },
+          )
         }
-        Spacer(Modifier.width(8.dp))
+
+        Spacer(Modifier.width(10.dp))
 
         val backMs = if (jumpIntervalMode == 1) 15_000L else 10_000L
         val backLabel = if (jumpIntervalMode == 1) "−15s" else "−10s"
-        TextButton(onClick = { container.playback.seekBy(-backMs) }) { Text(backLabel) }
-        Spacer(Modifier.width(12.dp))
+
+        FilledTonalIconButton(
+          onClick = { container.playback.seekBy(-backMs) },
+          modifier = Modifier.size(48.dp),
+          colors = IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+          ),
+        ) {
+          Text(
+            backLabel,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Spacer(Modifier.width(14.dp))
 
         FilledIconButton(
           onClick = { container.playback.togglePlayPause() },
@@ -281,33 +319,76 @@ fun PlayerScreen(
           }
         }
 
-        Spacer(Modifier.width(12.dp))
-        TextButton(onClick = { container.playback.seekBy(30_000L) }) { Text("+30s") }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(14.dp))
 
-        TextButton(
+        FilledTonalIconButton(
+          onClick = { container.playback.seekBy(30_000L) },
+          modifier = Modifier.size(48.dp),
+          colors = IconButtonDefaults.filledTonalIconButtonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+          ),
+        ) {
+          Text(
+            "+30s",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Spacer(Modifier.width(10.dp))
+
+        IconButton(
           onClick = { container.playback.playNext() },
           enabled = state.hasNext,
+          modifier = Modifier.size(44.dp),
         ) {
-          Text("⏭")
+          Icon(
+            Icons.Default.SkipNext,
+            contentDescription = "Next Track",
+            modifier = Modifier.size(30.dp),
+            tint = if (state.hasNext) {
+              MaterialTheme.colorScheme.onSurface
+            } else {
+              MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            },
+          )
         }
       }
 
       Spacer(Modifier.height(20.dp))
 
-      // Speed, Sleep Timer, Voice Boost & Silence Skip Row
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+      // Audio Control Dock: Speed | Sleep | Voice Boost | Silence Trim | Jump Interval
+      Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(
+          1.dp,
+          MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+        ),
       ) {
-        OutlinedButton(onClick = { showSpeedDialog = true }) {
-          val speedLabel = if (state.speed == 1.0f) "1.0×" else "${state.speed}×"
-          Text(speedLabel)
-        }
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+          horizontalArrangement = Arrangement.SpaceEvenly,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          // Speed
+          PlayerActionTile(
+            icon = Icons.Default.Speed,
+            label = if (state.speed == 1.0f) "1.0×" else "${state.speed}×",
+            isActive = state.speed != 1.0f,
+            contentDescription = "Playback Speed: ${state.speed}x",
+            onClick = { showSpeedDialog = true },
+            modifier = Modifier.weight(1f),
+          )
 
-        OutlinedButton(onClick = { showSleepDialog = true }) {
+          // Sleep Timer
+          val sleepActive = state.isSleepTimerEndOfTrack || state.sleepTimerRemainingSec != null
           val sleepLabel = when {
-            state.isSleepTimerEndOfTrack -> "Track end"
+            state.isSleepTimerEndOfTrack -> "End"
             state.sleepTimerRemainingSec != null -> {
               val sec = state.sleepTimerRemainingSec ?: 0
               val m = sec / 60
@@ -316,26 +397,45 @@ fun PlayerScreen(
             }
             else -> "Sleep"
           }
-          Text(sleepLabel)
+          PlayerActionTile(
+            icon = Icons.Default.Bedtime,
+            label = sleepLabel,
+            isActive = sleepActive,
+            contentDescription = "Sleep Timer: $sleepLabel",
+            onClick = { showSleepDialog = true },
+            modifier = Modifier.weight(1f),
+          )
+
+          // Voice Boost
+          PlayerActionTile(
+            icon = Icons.Default.GraphicEq,
+            label = "Boost",
+            isActive = state.isVoiceBoost,
+            contentDescription = "Voice Boost: ${if (state.isVoiceBoost) "Enabled" else "Disabled"}",
+            onClick = { container.playback.toggleVoiceBoost() },
+            modifier = Modifier.weight(1f),
+          )
+
+          // Silence Trim
+          PlayerActionTile(
+            icon = Icons.Default.ContentCut,
+            label = "Trim",
+            isActive = state.isSkipSilence,
+            contentDescription = "Trim Silence: ${if (state.isSkipSilence) "Enabled" else "Disabled"}",
+            onClick = { container.playback.toggleSkipSilence() },
+            modifier = Modifier.weight(1f),
+          )
+
+          // Skip Interval Toggle
+          PlayerActionTile(
+            icon = Icons.Default.Tune,
+            label = if (jumpIntervalMode == 1) "15s" else "10s",
+            isActive = jumpIntervalMode == 1,
+            contentDescription = "Skip Interval: ${if (jumpIntervalMode == 1) "-15s/+30s" else "-10s/+30s"}",
+            onClick = { jumpIntervalMode = if (jumpIntervalMode == 0) 1 else 0 },
+            modifier = Modifier.weight(1f),
+          )
         }
-
-        FilterChip(
-          selected = state.isVoiceBoost,
-          onClick = { container.playback.toggleVoiceBoost() },
-          label = { Text(if (state.isVoiceBoost) "Boost On" else "Boost") },
-        )
-
-        FilterChip(
-          selected = state.isSkipSilence,
-          onClick = { container.playback.toggleSkipSilence() },
-          label = { Text(if (state.isSkipSilence) "Trim On" else "Trim Silence") },
-        )
-
-        FilterChip(
-          selected = jumpIntervalMode == 1,
-          onClick = { jumpIntervalMode = if (jumpIntervalMode == 0) 1 else 0 },
-          label = { Text(if (jumpIntervalMode == 1) "−15s/+30s" else "−10s/+30s") },
-        )
       }
 
       Spacer(Modifier.height(20.dp))
@@ -778,6 +878,54 @@ private fun PauseGlyph(modifier: Modifier = Modifier, color: Color) {
       topLeft = Offset(right, 0f),
       size = Size(barWidth, size.height),
       cornerRadius = CornerRadius(2f, 2f),
+    )
+  }
+}
+
+@Composable
+private fun PlayerActionTile(
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  label: String,
+  isActive: Boolean,
+  contentDescription: String,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val activeColor = MaterialTheme.colorScheme.primary
+  val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant
+  val activeContainer = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+  val inactiveContainer = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+
+  Column(
+    modifier = modifier
+      .clip(RoundedCornerShape(14.dp))
+      .clickable(onClick = onClick)
+      .padding(vertical = 8.dp, horizontal = 2.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Box(
+      modifier = Modifier
+        .size(36.dp)
+        .clip(CircleShape)
+        .background(if (isActive) activeContainer else inactiveContainer),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(
+        imageVector = icon,
+        contentDescription = contentDescription,
+        tint = if (isActive) activeColor else inactiveColor,
+        modifier = Modifier.size(20.dp),
+      )
+    }
+    Spacer(Modifier.height(6.dp))
+    Text(
+      text = label,
+      style = MaterialTheme.typography.labelSmall,
+      fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+      color = if (isActive) activeColor else inactiveColor,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
     )
   }
 }

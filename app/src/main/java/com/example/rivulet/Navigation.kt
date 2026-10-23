@@ -11,8 +11,9 @@ import com.example.rivulet.ui.player.PlayerScreen
 import com.example.rivulet.ui.torrent.TorrentScreen
 
 @Composable
-fun MainNavigation(container: AppContainer) {
-  val backStack = rememberNavBackStack(Main)
+fun MainNavigation(container: AppContainer, startInPlayer: Boolean = false) {
+  val initialKeys = if (startInPlayer) arrayOf(Main, Player) else arrayOf(Main)
+  val backStack = rememberNavBackStack(*initialKeys)
 
   NavDisplay(
     backStack = backStack,

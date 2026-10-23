@@ -31,10 +31,11 @@ class MainActivity : ComponentActivity() {
     }
 
     enableEdgeToEdge()
+    val startInPlayer = intent?.getBooleanExtra("openPlayer", false) ?: false
     setContent {
       RivuletTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-          MainNavigation(container)
+          MainNavigation(container, startInPlayer = startInPlayer)
         }
       }
     }
