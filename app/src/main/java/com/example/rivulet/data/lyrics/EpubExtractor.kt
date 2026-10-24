@@ -87,20 +87,11 @@ object EpubExtractor {
   }
 
   fun stripHtml(html: String): String {
-    return html
-      .replace(Regex("<script[^>]*>.*?</script>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), "")
-      .replace(Regex("<style[^>]*>.*?</style>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), "")
-      .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-      .replace(Regex("</p>", RegexOption.IGNORE_CASE), "\n\n")
-      .replace(Regex("<[^>]+>"), "")
-      .replace("&nbsp;", " ")
-      .replace("&amp;", "&")
-      .replace("&lt;", "<")
-      .replace("&gt;", ">")
-      .replace("&quot;", "\"")
-      .replace("&apos;", "'")
-      .replace(Regex("[ \t]+"), " ")
-      .replace(Regex("\n{3,}"), "\n\n")
-      .trim()
+    val doc = org.jsoup.Jsoup.parse(html)
+    doc.select("script, style, nav").remove()
+    doc.select("br").forEach { it.before(org.jsoup.nodes.TextNode("\n")) }
+    doc.select("p, div, h1, h2, h3, li").forEach { it.appendChild(org.jsoup.nodes.TextNode("\n\n")) }
+    return doc.body().wholeText().replace('\u00a0', ' ').replace(Regex("[ \\t]+"), " ")
+      .replace(Regex("\\n{3,}"), "\n\n").trim()
   }
 }

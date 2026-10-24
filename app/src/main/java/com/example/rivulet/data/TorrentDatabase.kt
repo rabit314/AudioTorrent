@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
 import com.example.rivulet.data.lyrics.EpubBook
 import com.example.rivulet.data.lyrics.EpubChapter
+import com.example.rivulet.data.lyrics.ReadAlongStore
 import java.util.Calendar
 import java.util.LinkedHashMap
 
@@ -104,8 +105,8 @@ data class WishlistBook(
   val addedAt: Long = System.currentTimeMillis(),
 )
 
-class TorrentDatabase(context: Context) :
-  SQLiteOpenHelper(context.applicationContext, DATABASE_NAME, null, DATABASE_VERSION) {
+class TorrentDatabase(context: Context, databaseName: String = DATABASE_NAME) :
+  SQLiteOpenHelper(context.applicationContext, databaseName, null, DATABASE_VERSION) {
 
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
@@ -244,6 +245,7 @@ class TorrentDatabase(context: Context) :
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_history_hash_file ON playback_history(info_hash, file_index)")
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_recent_searches_time ON recent_searches(searched_at DESC)")
     db.execSQL("CREATE INDEX IF NOT EXISTS idx_bookmarks_hash ON bookmarks(info_hash, file_index)")
+    ReadAlongStore.createSchema(db)
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -368,6 +370,7 @@ class TorrentDatabase(context: Context) :
         db.execSQL("ALTER TABLE companion_books ADD COLUMN isbn TEXT")
       }
     }
+    if (oldVersion < 8) ReadAlongStore.migrateLegacy(db)
   }
 
   fun saveTorrent(torrent: SavedTorrent) {
@@ -417,6 +420,7 @@ class TorrentDatabase(context: Context) :
       db.delete("wishlist_books", "info_hash = ?", arrayOf(infoHash))
       db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
       db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
+      ReadAlongStore.deleteTorrent(db, infoHash)
       db.setTransactionSuccessful()
     } catch (t: Throwable) {
       Log.e(TAG, "Error deleting torrent $infoHash", t)
@@ -1239,6 +1243,6 @@ class TorrentDatabase(context: Context) :
   companion object {
     private const val TAG = "RivuletDB"
     private const val DATABASE_NAME = "rivulet.db"
-    private const val DATABASE_VERSION = 7
+    private const val DATABASE_VERSION = 8
   }
 }

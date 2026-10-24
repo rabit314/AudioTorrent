@@ -7,14 +7,16 @@ data class TimedLine(
   val text: String,
   val isParagraphStart: Boolean = false,
 ) {
+  val isTimed: Boolean get() = startTimeMs >= 0L && endTimeMs > startTimeMs
   val durationMs: Long
     get() = (endTimeMs - startTimeMs).coerceAtLeast(0L)
 }
 
 enum class TextSyncSource(val displayName: String) {
+  NARRATION("Matched to narration"),
   LRC("Synced LRC"),
   SRT("Subtitle SRT"),
-  EPUB_PACED("Companion Ebook"),
+  EPUB_PACED("Estimated book timing"),
   TXT_PACED("Paced Text"),
   LOCAL_ATTACHMENT("Attached File"),
 }

@@ -16,12 +16,19 @@ val keystoreProperties = Properties().apply {
 android {
     namespace = "com.example.rivulet"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
     defaultConfig {
         applicationId = "com.example.rivulet"
         minSdk = 26
         targetSdk = 36
         versionCode = 4
         versionName = "0.3.0-beta"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
+    }
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.31.6" }
     }
 
     signingConfigs {

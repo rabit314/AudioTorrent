@@ -99,17 +99,12 @@ fun PlayerScreen(
   val queueTracks by container.playback.currentQueue.collectAsStateWithLifecycle()
   val currentQueueIndex by container.playback.currentQueueIndex.collectAsStateWithLifecycle()
   val bookmarks by container.playback.bookmarks.collectAsStateWithLifecycle()
-  val activeWindowLines by container.playback.activeWindowLines.collectAsStateWithLifecycle()
-  val activeLineIndex by container.playback.activeLineIndex.collectAsStateWithLifecycle()
-  val syncOffsetMs by container.playback.currentSyncOffsetMs.collectAsStateWithLifecycle()
-  val isLyricsAvailable by container.playback.isLyricsAvailable.collectAsStateWithLifecycle()
-  val lyricsSource by container.playback.lyricsSource.collectAsStateWithLifecycle()
-  val companionBookTitle by container.playback.companionBookTitle.collectAsStateWithLifecycle()
-  val companionBookIsbn by container.playback.companionBookIsbn.collectAsStateWithLifecycle()
-  val activeChapterTitle by container.playback.activeChapterTitle.collectAsStateWithLifecycle()
-  val alignmentConfidence by container.playback.alignmentConfidence.collectAsStateWithLifecycle()
-  val alignmentStrategy by container.playback.alignmentStrategy.collectAsStateWithLifecycle()
-  val allCompanionChapters by container.playback.allCompanionChapters.collectAsStateWithLifecycle()
+  val readAlong by container.playback.readAlong.state.collectAsStateWithLifecycle()
+  val activeWindowLines = readAlong.lines
+  val activeLineIndex = readAlong.activeLineIndex
+  val companionBookTitle = readAlong.title
+  val isLyricsAvailable = readAlong.bookId != null
+  val readAlongTorrents by container.engine.torrents.collectAsStateWithLifecycle()
 
   var dragValue by remember { mutableStateOf<Float?>(null) }
   var showSpeedDialog by remember { mutableStateOf(false) }
@@ -474,7 +469,7 @@ fun PlayerScreen(
             )
             val activeLine = activeWindowLines.getOrNull(activeLineIndex)
             Text(
-              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Tap to attach companion book (EPUB / TXT)",
+              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Find book text and follow the narrator",
               style = MaterialTheme.typography.bodySmall,
               color = if (activeLine != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
               maxLines = 1,
@@ -832,29 +827,10 @@ fun PlayerScreen(
     ) {
       val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
       LyricsView(
-        lines = activeWindowLines,
-        activeLineIndex = activeLineIndex,
-        syncOffsetMs = syncOffsetMs,
-        source = lyricsSource,
-        companionBookTitle = companionBookTitle,
-        activeChapterTitle = activeChapterTitle,
-        isbn = companionBookIsbn,
+        repository = container.playback.readAlong,
+        audioFiles = readAlongTorrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
         cleanBookTitle = cleanBook,
-        alignmentConfidence = alignmentConfidence,
-        alignmentStrategy = alignmentStrategy,
-        allChapters = allCompanionChapters,
         onSeekToLine = { line -> container.playback.seekToLine(line) },
-        onAdjustSync = { delta -> container.playback.adjustSyncOffset(delta) },
-        onCalibrateSync = { line -> container.playback.calibrateSyncToLine(line) },
-        onSelectChapter = { chapter -> container.playback.selectChapterForCurrentTrack(chapter) },
-        onAttachFileText = { text, source ->
-          container.playback.loadLyricsFromText(text, source)
-        },
-        onAttachCompanionFile = { bytes, fileName ->
-          val hash = state.infoHash ?: return@LyricsView
-          val audioFiles = container.engine.torrents.value.firstOrNull { it.infoHash == hash }?.audioFiles ?: emptyList()
-          container.playback.attachCompanionBook(bytes, fileName, hash, audioFiles)
-        },
       )
     }
   }

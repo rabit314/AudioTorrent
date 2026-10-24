@@ -1,259 +1,100 @@
 package com.example.rivulet.data.lyrics
 
-import android.util.Log
-import java.io.ByteArrayInputStream
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import org.jsoup.parser.Parser
 import java.io.InputStream
-import java.util.zip.ZipEntry
+import java.net.URI
 import java.util.zip.ZipInputStream
 
-data class EpubBook(
-  val title: String,
-  val author: String,
-  val chapters: List<EpubChapter>,
-  val isbn: String? = null,
-) {
-  val totalWordCount: Int
-    get() = chapters.sumOf { it.wordCount }
+data class EpubBook(val title: String, val author: String, val chapters: List<EpubChapter>, val isbn: String? = null) {
+  val totalWordCount: Int get() = chapters.sumOf { it.wordCount }
 }
 
-data class EpubChapter(
-  val index: Int,
-  val id: String,
-  val href: String,
-  val title: String,
-  val text: String,
-  val wordCount: Int,
-)
+data class EpubChapter(val index: Int, val id: String, val href: String, val title: String, val text: String, val wordCount: Int)
 
-/**
- * Standard-compliant EPUB parser that parses `META-INF/container.xml`, `.opf` spine,
- * and NCX/Nav table of contents to extract chapters in their true reading sequence.
- */
+/** Bounded EPUB container, OPF spine, EPUB 2 NCX and EPUB 3 navigation reader. */
 object EpubStructureParser {
-
-  private const val TAG = "EpubStructureParser"
+  private const val MAX_EXPANDED = 64 * 1024 * 1024
+  private const val MAX_DOCUMENT = 8 * 1024 * 1024
 
   fun parse(inputStream: InputStream): EpubBook {
-    val entries = HashMap<String, ByteArray>()
-
-    // Ingest zip entries into memory map
-    ZipInputStream(inputStream).use { zis ->
-      var entry: ZipEntry? = zis.nextEntry
+    val entries = LinkedHashMap<String, String>()
+    var expanded = 0L
+    var entryCount = 0
+    ZipInputStream(inputStream).use { zip ->
+      var entry = zip.nextEntry
       while (entry != null) {
+        require(++entryCount <= 10_000) { "EPUB contains too many files." }
+        val name = entry.name.replace('\\', '/')
         if (!entry.isDirectory) {
-          // Normalize paths to lower/forward-slash for robust lookup
-          val normalizedName = entry.name.replace('\\', '/')
-          entries[normalizedName] = zis.readBytes()
+          val readable = name.substringAfterLast('.').lowercase() in setOf("xml", "opf", "xhtml", "html", "htm", "ncx")
+          val buffer = if (readable) java.io.ByteArrayOutputStream() else null
+          val chunk = ByteArray(8192)
+          while (true) {
+            val count = zip.read(chunk)
+            if (count < 0) break
+            require(buffer == null || buffer.size() + count <= MAX_DOCUMENT) { "An EPUB chapter is too large." }
+            expanded += count
+            require(expanded <= MAX_EXPANDED) { "EPUB text exceeds the import limit." }
+            buffer?.write(chunk, 0, count)
+          }
+          if (buffer != null) entries[name] = buffer.toString("UTF-8")
         }
-        zis.closeEntry()
-        entry = zis.nextEntry
+        zip.closeEntry()
+        entry = zip.nextEntry
       }
     }
-
-    if (entries.isEmpty()) {
-      return EpubBook("Unknown Title", "Unknown Author", emptyList())
-    }
-
-    // 1. Locate OPF file path from META-INF/container.xml
-    val containerBytes = entries["META-INF/container.xml"]
-      ?: entries.entries.firstOrNull { it.key.endsWith("container.xml", ignoreCase = true) }?.value
-
-    var opfPath = "content.opf"
-    if (containerBytes != null) {
-      val containerXml = String(containerBytes, Charsets.UTF_8)
-      val rootfileMatch = Regex("full-path\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(containerXml)
-      if (rootfileMatch != null) {
-        opfPath = rootfileMatch.groupValues[1]
+    require(entries.isNotEmpty()) { "This file is not a readable EPUB." }
+    fun entry(path: String) = entries[path] ?: entries.entries.firstOrNull { it.key.equals(path, true) }?.value
+    val container = entry("META-INF/container.xml")?.let { Jsoup.parse(it, "", Parser.xmlParser()) }
+    val requestedOpf = container?.getAllElements()?.firstOrNull { it.localTag() == "rootfile" }?.attr("full-path")
+    val opfPath = requestedOpf?.takeIf { entry(it) != null }
+      ?: entries.keys.firstOrNull { it.endsWith(".opf", true) }
+      ?: error("EPUB package metadata is missing.")
+    val opf = Jsoup.parse(entry(opfPath)!!, "", Parser.xmlParser())
+    fun metadata(tag: String) = opf.getAllElements().firstOrNull { it.localTag() == tag }?.text()
+    val title = metadata("title") ?: "Imported Ebook"
+    val author = metadata("creator") ?: "Unknown Author"
+    val isbn = opf.getAllElements().filter { it.localTag() == "identifier" }
+      .firstNotNullOfOrNull { IsbnValidator.extractFirstValidIsbn(it.text()) }
+    val manifest = opf.getAllElements().filter { it.localTag() == "item" }.associateBy { it.attr("id") }
+    val titles = LinkedHashMap<String, String>()
+    manifest.values.filter { it.attr("media-type") == "application/x-dtbncx+xml" || "nav" in it.attr("properties").split(' ') }
+      .forEach { item ->
+        val tocPath = resolveHref(opfPath, item.attr("href"))
+        val toc = entry(tocPath)?.let { Jsoup.parse(it, "", Parser.xmlParser()) } ?: return@forEach
+        toc.getAllElements().filter { it.localTag() == "navPoint" }.forEach { point ->
+          val content = point.getAllElements().firstOrNull { it.localTag() == "content" }
+          val label = point.getAllElements().firstOrNull { it.localTag() == "navLabel" }?.text()
+          if (content != null && !label.isNullOrBlank()) titles.putIfAbsent(resolveHref(tocPath, content.attr("src")), label)
+        }
+        toc.getAllElements().filter { it.localTag() == "a" && it.hasAttr("href") }.forEach { link ->
+          if (link.text().isNotBlank()) titles.putIfAbsent(resolveHref(tocPath, link.attr("href")), link.text())
+        }
       }
-    }
-
-    // Lookup OPF entry (case-insensitive fallback)
-    val opfEntry = entries[opfPath]
-      ?: entries.entries.firstOrNull { it.key.equals(opfPath, ignoreCase = true) }?.value
-      ?: entries.entries.firstOrNull { it.key.endsWith(".opf", ignoreCase = true) }?.value
-
-    if (opfEntry == null) {
-      Log.w(TAG, "No OPF package file found in EPUB. Falling back to naive XHTML extraction.")
-      return fallbackExtraction(entries)
-    }
-
-    val opfXml = String(opfEntry, Charsets.UTF_8)
-    val opfDir = if (opfPath.contains('/')) opfPath.substringBeforeLast('/') + "/" else ""
-
-    // 2. Parse Metadata (Title, Author)
-    val titleMatch = Regex("<dc:title[^>]*>([^<]+)</dc:title>", RegexOption.IGNORE_CASE).find(opfXml)
-    val bookTitle = titleMatch?.groupValues?.get(1)?.trim() ?: "Unknown Title"
-
-    val authorMatch = Regex("<dc:creator[^>]*>([^<]+)</dc:creator>", RegexOption.IGNORE_CASE).find(opfXml)
-    val bookAuthor = authorMatch?.groupValues?.get(1)?.trim() ?: "Unknown Author"
-
-    val isbn = Regex("<dc:identifier[^>]*>([^<]+)</dc:identifier>", RegexOption.IGNORE_CASE)
-      .findAll(opfXml)
-      .mapNotNull { IsbnValidator.extractFirstValidIsbn(it.groupValues[1]) }
-      .firstOrNull()
-
-    // 3. Parse Manifest: ID -> Href
-    val manifestMap = HashMap<String, String>() // id to resolved href
-    val itemRegex = Regex("<item\\s+([^>]+)>", RegexOption.IGNORE_CASE)
-    for (m in itemRegex.findAll(opfXml)) {
-      val attrs = m.groupValues[1]
-      val id = Regex("id\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1)
-      val href = Regex("href\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1)
-      if (id != null && href != null) {
-        // Resolve relative to opfDir
-        val resolvedHref = resolveHref(opfDir, href)
-        manifestMap[id] = resolvedHref
+    val chapters = opf.getAllElements().filter { it.localTag() == "itemref" && it.attr("linear") != "no" }
+      .mapNotNull { ref -> manifest[ref.attr("idref")] }.mapNotNull { item ->
+        val path = resolveHref(opfPath, item.attr("href"))
+        val html = entry(path) ?: return@mapNotNull null
+        val text = EpubExtractor.stripHtml(html)
+        if (text.isBlank()) return@mapNotNull null
+        val heading = Jsoup.parse(html).selectFirst("h1, h2, h3")?.text()
+        Triple(item.attr("id"), path, Triple(titles[path] ?: heading ?: "Chapter", text, ReadAlongText.tokens(text).size))
+      }.mapIndexed { index, (id, path, content) ->
+        EpubChapter(index + 1, id, path, content.first, content.second, content.third)
       }
-    }
-
-    // 4. Parse Spine: Ordered itemrefs
-    val spineItemIds = ArrayList<String>()
-    val spineBlockMatch = Regex("<spine[^>]*>(.*?)</spine>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).find(opfXml)
-    if (spineBlockMatch != null) {
-      val itemrefRegex = Regex("<itemref\\s+[^>]*idref\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>", RegexOption.IGNORE_CASE)
-      for (im in itemrefRegex.findAll(spineBlockMatch.groupValues[1])) {
-        spineItemIds.add(im.groupValues[1])
-      }
-    }
-
-    // 5. Parse TOC (toc.ncx or Nav document) for Chapter Titles
-    val tocTitlesByHref = HashMap<String, String>()
-    parseTocTitles(entries, opfDir, opfXml, manifestMap, tocTitlesByHref)
-
-    // 6. Extract Chapter Contents in Spine Order
-    val chapters = ArrayList<EpubChapter>()
-    var chapterCounter = 1
-
-    for (itemId in spineItemIds) {
-      val href = manifestMap[itemId] ?: continue
-      val fileBytes = entries[href]
-        ?: entries[href.removePrefix("/")]
-        ?: entries.entries.firstOrNull { it.key.equals(href, ignoreCase = true) }?.value
-        ?: continue
-
-      val rawContent = String(fileBytes, Charsets.UTF_8)
-      val cleanText = EpubExtractor.stripHtml(rawContent)
-
-      // Only include chapters that have substantial readable text (> 20 words)
-      val words = countWords(cleanText)
-      if (words >= 15) {
-        val chapterTitle = tocTitlesByHref[href]
-          ?: tocTitlesByHref[href.substringAfterLast('/')]
-          ?: extractHeadingTitle(rawContent)
-          ?: "Chapter $chapterCounter"
-
-        chapters.add(
-          EpubChapter(
-            index = chapterCounter++,
-            id = itemId,
-            href = href,
-            title = chapterTitle,
-            text = cleanText,
-            wordCount = words,
-          )
-        )
-      }
-    }
-
-    // If spine was empty or failed, fallback
-    if (chapters.isEmpty()) {
-      return fallbackExtraction(entries, bookTitle, bookAuthor, isbn)
-    }
-
-    return EpubBook(
-      title = bookTitle,
-      author = bookAuthor,
-      chapters = chapters,
-      isbn = isbn,
-    )
+    require(chapters.isNotEmpty()) { "EPUB has no readable chapters in its reading order." }
+    return EpubBook(title, author, chapters, isbn)
   }
 
-  private fun parseTocTitles(
-    entries: Map<String, ByteArray>,
-    opfDir: String,
-    opfXml: String,
-    manifestMap: Map<String, String>,
-    outTitles: HashMap<String, String>,
-  ) {
-    // Check toc attribute in <spine toc="ncx">
-    val ncxId = Regex("<spine[^>]*toc\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(opfXml)?.groupValues?.get(1)
-    val ncxHref = if (ncxId != null) manifestMap[ncxId] else null
-
-    val ncxBytes = (if (ncxHref != null) entries[ncxHref] ?: entries[ncxHref.removePrefix("/")] else null)
-      ?: entries.entries.firstOrNull { it.key.endsWith(".ncx", ignoreCase = true) }?.value
-
-    if (ncxBytes != null) {
-      val ncxXml = String(ncxBytes, Charsets.UTF_8)
-      val navPointRegex = Regex("<navPoint[^>]*>.*?<navLabel>\\s*<text>([^<]+)</text>\\s*</navLabel>\\s*<content\\s+src\\s*=\\s*[\"']([^\"'#]+)[\"'][^>]*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-      for (npm in navPointRegex.findAll(ncxXml)) {
-        val title = npm.groupValues[1].trim()
-        val src = npm.groupValues[2].trim()
-        val resolvedSrc = resolveHref(opfDir, src)
-        outTitles[resolvedSrc] = title
-        outTitles[src.substringAfterLast('/')] = title
-      }
-    }
+  fun resolveHref(baseFile: String, href: String): String {
+    val uri = URI("/" + baseFile.replace(" ", "%20")).resolve(href.replace(" ", "%20")).normalize()
+    require(uri.scheme == null && uri.host == null) { "EPUB contains an external chapter reference." }
+    val path = uri.path.removePrefix("/")
+    require(!path.startsWith("../")) { "Invalid EPUB chapter path." }
+    return path
   }
 
-  private fun extractHeadingTitle(html: String): String? {
-    val h1Match = Regex("<h[1-3][^>]*>([^<]+)</h[1-3]>", RegexOption.IGNORE_CASE).find(html)
-    val text = h1Match?.groupValues?.get(1)?.trim()
-    return if (!text.isNullOrBlank() && text.length <= 80) text else null
-  }
-
-  private fun resolveHref(baseDir: String, href: String): String {
-    val cleanHref = href.substringBefore('#')
-    return if (baseDir.isBlank() || cleanHref.startsWith("/")) {
-      cleanHref.removePrefix("/")
-    } else {
-      (baseDir + cleanHref).replace("//", "/")
-    }
-  }
-
-  private fun countWords(text: String): Int {
-    if (text.isBlank()) return 0
-    return text.split(Regex("\\s+")).count { it.isNotBlank() }
-  }
-
-  private fun fallbackExtraction(
-    entries: Map<String, ByteArray>,
-    fallbackTitle: String = "Imported Ebook",
-    fallbackAuthor: String = "Unknown Author",
-    isbn: String? = null,
-  ): EpubBook {
-    val chapters = ArrayList<EpubChapter>()
-    var idx = 1
-
-    val xhtmlEntries = entries.filterKeys { k ->
-      val lk = k.lowercase()
-      (lk.endsWith(".xhtml") || lk.endsWith(".html") || lk.endsWith(".htm")) &&
-        !lk.contains("cover") && !lk.contains("toc")
-    }.toSortedMap()
-
-    for ((path, bytes) in xhtmlEntries) {
-      val raw = String(bytes, Charsets.UTF_8)
-      val clean = EpubExtractor.stripHtml(raw)
-      val words = countWords(clean)
-      if (words >= 15) {
-        val title = extractHeadingTitle(raw) ?: "Chapter $idx"
-        chapters.add(
-          EpubChapter(
-            index = idx++,
-            id = path,
-            href = path,
-            title = title,
-            text = clean,
-            wordCount = words,
-          )
-        )
-      }
-    }
-
-    return EpubBook(
-      title = fallbackTitle,
-      author = fallbackAuthor,
-      chapters = chapters,
-      isbn = isbn,
-    )
-  }
+  private fun Element.localTag() = tagName().substringAfter(':')
 }

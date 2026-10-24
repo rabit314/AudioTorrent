@@ -1,597 +1,172 @@
 package com.example.rivulet.ui.player
 
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Adjust
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Book
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.FastRewind
-import androidx.compose.material.icons.filled.FormatQuote
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.rivulet.data.lyrics.EpubChapter
-import com.example.rivulet.data.lyrics.EpubExtractor
-import com.example.rivulet.data.lyrics.TextSyncSource
-import com.example.rivulet.data.lyrics.TimedLine
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.rivulet.data.AudioFile
+import com.example.rivulet.data.lyrics.*
 
-@OptIn(ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun LyricsView(
-  lines: List<TimedLine>,
-  activeLineIndex: Int,
-  syncOffsetMs: Long,
-  source: TextSyncSource?,
-  companionBookTitle: String? = null,
-  activeChapterTitle: String? = null,
-  isbn: String? = null,
-  cleanBookTitle: String? = null,
-  alignmentConfidence: Float? = null,
-  alignmentStrategy: String? = null,
-  allChapters: List<EpubChapter> = emptyList(),
+  repository: ReadAlongRepository,
+  audioFiles: List<AudioFile>,
+  cleanBookTitle: String,
   onSeekToLine: (TimedLine) -> Unit,
-  onAdjustSync: (deltaMs: Long) -> Unit,
-  onCalibrateSync: (TimedLine) -> Unit = {},
-  onSelectChapter: (EpubChapter) -> Unit = {},
-  onAttachFileText: (text: String, source: TextSyncSource) -> Unit,
-  onAttachCompanionFile: (bytes: ByteArray, fileName: String) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
 ) {
-  val listState = rememberLazyListState()
-  var userIsInteracting by remember { mutableStateOf(false) }
-  var showChapterPicker by remember { mutableStateOf(false) }
-  val context = LocalContext.current
-  val clipboardManager = LocalClipboardManager.current
-  val scope = rememberCoroutineScope()
+  val state by repository.state.collectAsStateWithLifecycle()
+  val list = rememberLazyListState()
+  val dragged by list.interactionSource.collectIsDraggedAsState()
+  var following by rememberSaveable(state.track) { mutableStateOf(true) }
+  var query by rememberSaveable(state.track) { mutableStateOf(cleanBookTitle) }
+  var showSearch by rememberSaveable(state.track) { mutableStateOf(false) }
+  var showTracks by remember { mutableStateOf(false) }
+  var showChapters by remember { mutableStateOf(false) }
+  var selectedTracks by remember(state.track, audioFiles) {
+    mutableStateOf(ReadAlongText.defaultTracks(audioFiles, state.track?.fileIndex ?: -1))
+  }
+  var pickedFor by remember { mutableStateOf<ReadAlongTrack?>(null) }
+  var pickedTracks by remember { mutableStateOf<Set<Int>>(emptySet()) }
+  var pendingEdition by remember(state.track) { mutableStateOf<BookEdition?>(null) }
+  val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    if (uri != null) {
+      if (repository.state.value.track == pickedFor) repository.importDocument(uri, pickedTracks)
+      else repository.reportImportError("The audio track changed while the picker was open. Select the file again for the current book.")
+    }
+  }
+  DisposableEffect(repository) {
+    repository.setVisible(true)
+    onDispose { repository.setVisible(false) }
+  }
+  LaunchedEffect(state.track, state.phase) {
+    if (state.bookId == null && state.phase == ReadAlongPhase.EMPTY) {
+      showSearch = true
+      repository.searchBooks(query)
+    }
+  }
+  LaunchedEffect(state.bookId) { if (state.bookId != null) showSearch = false }
+  LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
+  LaunchedEffect(dragged) { if (dragged) following = false }
+  LaunchedEffect(state.track, state.activeLineIndex, following) {
+    if (following && state.activeLineIndex in state.lines.indices) list.animateScrollToItem((state.activeLineIndex - 2).coerceAtLeast(0))
+  }
 
-  val filePicker =
-    rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-      if (uri == null) return@rememberLauncherForActivityResult
-      scope.launch {
-        withContext(Dispatchers.IO) {
-          runCatching {
-            val fileName = uri.lastPathSegment ?: "document.txt"
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-              if (fileName.endsWith(".epub", ignoreCase = true) || fileName.endsWith(".txt", ignoreCase = true)) {
-                onAttachCompanionFile(bytes, fileName)
-              } else {
-                val src = when {
-                  fileName.endsWith(".lrc", ignoreCase = true) -> TextSyncSource.LRC
-                  fileName.endsWith(".srt", ignoreCase = true) -> TextSyncSource.SRT
-                  else -> TextSyncSource.LOCAL_ATTACHMENT
-                }
-                val content = EpubExtractor.extractTextFromBytes(bytes, fileName)
-                onAttachFileText(content, src)
-              }
+  Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    Text(state.title ?: cleanBookTitle.ifBlank { "Read Along" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    val activeChapter = state.lines.getOrNull(state.activeLineIndex)?.let { line ->
+      state.chapters.firstOrNull { chapter -> chapter.text.contains(line.text) }?.title
+    }
+    if (activeChapter != null) Text(activeChapter, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+    state.isbn?.let { Text("ISBN $it · checksum valid", style = MaterialTheme.typography.labelSmall) }
+    if (state.source != null) Text("${state.source!!.displayName} · ${state.matchedSentences} sentences timed", style = MaterialTheme.typography.labelSmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+      TextButton(onClick = { showSearch = !showSearch; if (showSearch) repository.searchBooks(query) }) { Text("Find text") }
+      TextButton(onClick = {
+        pickedFor = state.track; pickedTracks = selectedTracks
+        picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
+      }) { Text("Import") }
+      TextButton(onClick = { showTracks = true }) { Text("Tracks (${selectedTracks.size})") }
+      if (state.chapters.isNotEmpty()) TextButton(onClick = { showChapters = true }) { Text("Chapters") }
+    }
+
+    if (showSearch) {
+      OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        trailingIcon = { TextButton(onClick = { pendingEdition = null; repository.searchBooks(query) }, enabled = !state.searching) { Text("Search") } })
+      if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
+      state.lookupMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 6.dp)) }
+      if (state.editions.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 230.dp)) {
+        items(state.editions, key = { it.url }) { edition ->
+          OutlinedCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = {
+            pendingEdition = edition; repository.downloadEdition(edition, selectedTracks)
+          }, enabled = !state.searching) {
+            Column(Modifier.padding(12.dp)) {
+              Text(edition.title, fontWeight = FontWeight.Bold)
+              Text(listOf(edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+              edition.isbn?.let { Text("ISBN $it", style = MaterialTheme.typography.labelSmall) }
             }
           }
         }
       }
     }
 
-  // Smooth auto-scroll following the active sentence (Spotify-style)
-  LaunchedEffect(activeLineIndex) {
-    if (activeLineIndex >= 0 && !userIsInteracting && activeLineIndex < lines.size) {
-      val targetIndex = (activeLineIndex - 2).coerceAtLeast(0)
-      listState.animateScrollToItem(targetIndex)
+    if (state.phase == ReadAlongPhase.LOADING || state.phase == ReadAlongPhase.PREPARING || state.modelProgress != null) {
+      LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
+    }
+    state.message?.let { Text(it + (state.modelProgress?.let { p -> " $p%" } ?: ""), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 6.dp)) }
+    if (state.phase == ReadAlongPhase.ERROR) TextButton(onClick = { repository.retry() }) { Text("Retry") }
+    if (state.phase == ReadAlongPhase.NEEDS_MODEL || (state.phase == ReadAlongPhase.ERROR && state.bookId != null && state.matchedSentences == 0)) {
+      FilledTonalButton(onClick = { repository.downloadModel() }, enabled = state.modelProgress == null) { Text("Download speech model · 60 MB") }
+    }
+    if (state.bookId != null) {
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        TextButton(onClick = { repository.adjustOffset(-500) }) { Text("−0.5s") }
+        Text("${state.offsetMs / 1000.0}s", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.labelMedium)
+        TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
+        TextButton(onClick = { if (state.source == TextSyncSource.EPUB_PACED) repository.useNarrationTiming() else repository.useEstimatedTiming() }) {
+          Text(if (state.source == TextSyncSource.EPUB_PACED) "Match narrator" else "Estimate timing")
+        }
+      }
+    }
+    if (!following) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
+
+    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+      items(state.lines, key = { it.id }) { line ->
+        val active = state.lines.getOrNull(state.activeLineIndex)?.id == line.id
+        Column(Modifier.fillMaxWidth().background(
+          if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface,
+          RoundedCornerShape(12.dp),
+        ).combinedClickable(
+          onClick = { if (line.isTimed) { onSeekToLine(line); following = true } },
+          onLongClick = { if (line.isTimed) repository.calibrate(line) },
+        ).padding(12.dp)) {
+          Text(line.text, fontSize = if (active) 23.sp else 20.sp, lineHeight = 30.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+            color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
+          if (active) TextButton(onClick = { repository.calibrate(line) }) { Text("Sync here") }
+        }
+      }
+      if (state.lines.isEmpty() && state.phase == ReadAlongPhase.EMPTY) item { Text("Find an edition above or import your EPUB, TXT, LRC or SRT file.") }
     }
   }
 
-  // Auto-scroll pause debounce when user scrolls manually
-  LaunchedEffect(listState.isScrollInProgress) {
-    if (listState.isScrollInProgress) {
-      userIsInteracting = true
-    } else if (userIsInteracting) {
-      delay(3000)
-      userIsInteracting = false
-    }
-  }
-
-  val displayTitle = companionBookTitle ?: cleanBookTitle ?: "Read Along"
-
-  Column(
-    modifier = modifier.fillMaxSize().background(Color(0xFF0F1115)),
-  ) {
-    // Top Bar with Metadata & Sync Calibration
-    Column(
-      modifier = Modifier
-        .fillMaxWidth()
-        .background(Color(0xFF14171F))
-        .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-          Icon(
-            Icons.Default.FormatQuote,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp),
-          )
-          Spacer(Modifier.width(8.dp))
-          Column {
-            Text(
-              text = displayTitle,
-              style = MaterialTheme.typography.titleSmall,
-              fontWeight = FontWeight.Bold,
-              color = Color.White,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            if (!activeChapterTitle.isNullOrBlank()) {
-              Text(
-                text = activeChapterTitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-          }
-        }
-
-        // Sync micro-adjustment buttons (-0.5s / +0.5s)
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-          OutlinedButton(
-            onClick = { onAdjustSync(-500L) },
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-            modifier = Modifier.height(28.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
-          ) {
-            Icon(Icons.Default.FastRewind, contentDescription = "-0.5s", modifier = Modifier.size(12.dp))
-            Spacer(Modifier.width(2.dp))
-            Text("-0.5s", fontSize = 11.sp)
-          }
-
-          if (syncOffsetMs != 0L) {
-            Text(
-              "${if (syncOffsetMs > 0) "+" else ""}${syncOffsetMs / 1000.0}s",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.padding(horizontal = 2.dp),
-            )
-          }
-
-          OutlinedButton(
-            onClick = { onAdjustSync(500L) },
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-            modifier = Modifier.height(28.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
-          ) {
-            Text("+0.5s", fontSize = 11.sp)
-            Spacer(Modifier.width(2.dp))
-            Icon(Icons.Default.FastForward, contentDescription = "+0.5s", modifier = Modifier.size(12.dp))
-          }
-        }
-      }
-
-      // Secondary row: Source Pill, Verified ISBN Chip & Chapter Actions
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          modifier = Modifier.weight(1f, fill = false),
-        ) {
-          if (source != null) {
-            Surface(
-              color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-              shape = RoundedCornerShape(6.dp),
-            ) {
-              Text(
-                source.displayName,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-              )
-            }
-          }
-
-          // Verified ISBN Chip
-          if (!isbn.isNullOrBlank()) {
-            Surface(
-              color = Color(0xFF1B5E20).copy(alpha = 0.35f),
-              shape = RoundedCornerShape(6.dp),
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-              ) {
-                Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(11.dp))
-                Spacer(Modifier.width(3.dp))
-                Text(
-                  "ISBN $isbn",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = Color(0xFFA5D6A7),
-                  fontWeight = FontWeight.Medium,
-                  fontSize = 10.sp,
-                )
-              }
-            }
-          }
-
-          if (alignmentConfidence != null) {
-            val percent = (alignmentConfidence * 100).toInt()
-            val badgeColor = if (percent >= 80) Color(0xFF4CAF50) else Color(0xFFFF9800)
-            Surface(
-              color = badgeColor.copy(alpha = 0.2f),
-              shape = RoundedCornerShape(6.dp),
-            ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-              ) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = badgeColor, modifier = Modifier.size(10.dp))
-                Spacer(Modifier.width(3.dp))
-                Text(
-                  "$percent% Matched",
-                  style = MaterialTheme.typography.labelSmall,
-                  color = badgeColor,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 10.sp,
-                )
-              }
-            }
-          }
-        }
-
-        // Action icons: Chapter picker & Attach file
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-          if (allChapters.isNotEmpty()) {
-            IconButton(
-              onClick = { showChapterPicker = true },
-              modifier = Modifier.size(30.dp),
-            ) {
-              Icon(
-                Icons.Default.List,
-                contentDescription = "Select Chapter",
-                tint = Color.LightGray,
-                modifier = Modifier.size(18.dp),
-              )
-            }
-          }
-
-          IconButton(
-            onClick = { filePicker.launch(arrayOf("*/*")) },
-            modifier = Modifier.size(30.dp),
-          ) {
-            Icon(
-              Icons.Default.Add,
-              contentDescription = "Attach File",
-              tint = Color.LightGray,
-              modifier = Modifier.size(18.dp),
-            )
-          }
-        }
-      }
-    }
-
-    if (lines.isEmpty()) {
-      // Empty State: Spotify-style clean card with book name and attach action
-      Box(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        contentAlignment = Alignment.Center,
-      ) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2129)),
-          shape = RoundedCornerShape(16.dp),
-          modifier = Modifier.fillMaxWidth().padding(16.dp),
-        ) {
-          Column(
-            modifier = Modifier.padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-          ) {
-            Icon(
-              Icons.Default.Book,
-              contentDescription = null,
-              modifier = Modifier.size(48.dp),
-              tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.height(14.dp))
-            Text(
-              displayTitle,
-              style = MaterialTheme.typography.titleMedium,
-              fontWeight = FontWeight.Bold,
-              color = Color.White,
-              textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(6.dp))
-
-            if (!isbn.isNullOrBlank()) {
-              Surface(
-                color = Color(0xFF1B5E20).copy(alpha = 0.35f),
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.padding(bottom = 6.dp),
-              ) {
-                Row(
-                  verticalAlignment = Alignment.CenterVertically,
-                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                ) {
-                  Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF81C784), modifier = Modifier.size(12.dp))
-                  Spacer(Modifier.width(4.dp))
-                  Text(
-                    "Verified ISBN: $isbn",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFFA5D6A7),
-                    fontWeight = FontWeight.Bold,
-                  )
-                }
-              }
-            }
-
-            Text(
-              "Follow along sentence-by-sentence with synced text. Attach an EPUB or TXT file to auto-align chapters with your audiobook.",
-              style = MaterialTheme.typography.bodySmall,
-              color = Color.Gray,
-              textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(20.dp))
-
-            // Action Buttons
-            FilledTonalButton(
-              onClick = { filePicker.launch(arrayOf("*/*")) },
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-              Spacer(Modifier.width(8.dp))
-              Text("Attach Companion Book (EPUB / TXT)")
-            }
-
-            if (!cleanBookTitle.isNullOrBlank()) {
-              Spacer(Modifier.height(8.dp))
-              OutlinedButton(
-                onClick = {
-                  clipboardManager.setText(AnnotatedString(cleanBookTitle))
-                  Toast.makeText(context, "Copied \"$cleanBookTitle\" to clipboard", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray),
-              ) {
-                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Copy Book Title (\"$cleanBookTitle\")", fontSize = 12.sp)
-              }
-            }
-          }
-        }
-      }
-    } else {
-      // Pure Spotify-Style Scrolling Lyrics
-      LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-      ) {
-        itemsIndexed(lines, key = { idx, line -> "${line.id}_$idx" }) { index, line ->
-          val isActive = index == activeLineIndex
-          val textColor by animateColorAsState(
-            targetValue = if (isActive) Color.White else Color.Gray.copy(alpha = 0.5f),
-            animationSpec = tween(durationMillis = 250),
-            label = "lyricsColor",
-          )
-          val scale by animateFloatAsState(
-            targetValue = if (isActive) 1.02f else 1.0f,
-            animationSpec = tween(durationMillis = 250),
-            label = "lyricsScale",
-          )
-
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .scale(scale)
-              .clip(RoundedCornerShape(8.dp))
-              .combinedClickable(
-                onClick = { onSeekToLine(line) },
-                onLongClick = { onCalibrateSync(line) },
-              )
-              .then(
-                if (isActive) {
-                  Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                } else {
-                  Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                }
-              ),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Text(
-              text = line.text,
-              fontSize = if (isActive) 19.sp else 16.sp,
-              fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Normal,
-              lineHeight = if (isActive) 27.sp else 22.sp,
-              color = textColor,
-              modifier = Modifier.weight(1f),
-            )
-
-            // 1-Tap "Sync Here" calibration pill on active sentence
-            if (isActive) {
-              Spacer(Modifier.width(8.dp))
-              Surface(
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.clickable { onCalibrateSync(line) },
-              ) {
-                Row(
-                  verticalAlignment = Alignment.CenterVertically,
-                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                ) {
-                  Icon(
-                    Icons.Default.Adjust,
-                    contentDescription = "Sync line to current time",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(12.dp),
-                  )
-                  Spacer(Modifier.width(4.dp))
-                  Text(
-                    "Sync Here",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
-                  )
-                }
-              }
-            }
-          }
-        }
-
-        item {
-          Spacer(Modifier.height(48.dp))
-        }
-      }
-    }
-  }
-
-  // Chapter Selector Modal Bottom Sheet
-  if (showChapterPicker && allChapters.isNotEmpty()) {
-    val sheetState = rememberModalBottomSheetState()
-    ModalBottomSheet(
-      onDismissRequest = { showChapterPicker = false },
-      sheetState = sheetState,
-      containerColor = Color(0xFF14171F),
-    ) {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 20.dp, vertical = 12.dp),
-      ) {
-        Text(
-          "Select Chapter for this Audio Track",
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.Bold,
-          color = Color.White,
-        )
-        Text(
-          "If audio track numbers don't match the book chapters, tap a chapter to link it.",
-          style = MaterialTheme.typography.bodySmall,
-          color = Color.Gray,
-        )
-        Spacer(Modifier.height(16.dp))
-
-        LazyColumn(
-          modifier = Modifier.fillMaxWidth().height(360.dp),
-          verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-          itemsIndexed(allChapters) { idx, chapter ->
-            val isCurrent = chapter.title == activeChapterTitle
-            Surface(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .clickable {
-                  onSelectChapter(chapter)
-                  showChapterPicker = false
-                },
-              color = if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color(0xFF1E2129),
-            ) {
-              Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-              ) {
-                Column(modifier = Modifier.weight(1f)) {
-                  Text(
-                    chapter.title,
-                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.White,
-                    fontSize = 14.sp,
-                  )
-                  Text(
-                    "${chapter.wordCount} words",
-                    fontSize = 11.sp,
-                    color = Color.Gray,
-                  )
-                }
-                if (isCurrent) {
-                  Icon(
-                    Icons.Default.AutoAwesome,
-                    contentDescription = "Active Chapter",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp),
-                  )
-                }
-              }
-            }
-          }
-        }
-        Spacer(Modifier.height(24.dp))
-      }
-    }
+  if (showTracks) AlertDialog(
+    onDismissRequest = { showTracks = false }, title = { Text("Attach text to audio tracks") },
+    text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(audioFiles, key = { it.index }) { file ->
+      Row { Checkbox(file.index in selectedTracks, onCheckedChange = { checked ->
+        selectedTracks = if (checked) selectedTracks + file.index else selectedTracks - file.index
+      }, enabled = file.index != state.track?.fileIndex); Text(file.displayTitle, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall) }
+    } } },
+    confirmButton = { TextButton(onClick = { repository.updateTrackSelection(selectedTracks); showTracks = false }) { Text("Save") } },
+  )
+  if (showChapters) AlertDialog(
+    onDismissRequest = { showChapters = false }, title = { Text("Choose a chapter hint") },
+    text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(state.chapters, key = { it.index }) { chapter ->
+      TextButton(onClick = { repository.chooseChapter(chapter); showChapters = false; following = false }, modifier = Modifier.fillMaxWidth()) { Text(chapter.title) }
+    } } }, confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
+  )
+  state.accessUrl?.let { url ->
+    ZLibraryAccessDialog(url, onDismiss = { repository.dismissAccess() }, onReady = { html, loadedUrl ->
+      repository.dismissAccess()
+      val edition = pendingEdition
+      if (edition == null) repository.acceptRenderedSearch(html, loadedUrl) else repository.downloadEdition(edition, selectedTracks, html)
+    })
   }
 }

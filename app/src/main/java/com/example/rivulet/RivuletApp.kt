@@ -20,6 +20,7 @@ class AppContainer(context: Context) {
   val pendingTorrent = MutableStateFlow<String?>(null)
 
   init {
+    playback.analysisDataSource = { track -> engine.analysisDataSource(track.infoHash, track.fileIndex) }
     streamServer.start()
     playback.trackPreparer = { infoHash, fileIndex ->
       val stream = engine.prepareStream(infoHash, fileIndex)

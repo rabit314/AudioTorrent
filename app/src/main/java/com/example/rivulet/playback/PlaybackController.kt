@@ -129,19 +129,14 @@ class PlaybackController(
   private var sleepTimerRemainingSec: Int? = null
   private var sleepTimerEndOfTrack: Boolean = false
 
-  // Sliding-Page Synchronized Text & Lyrics
-  val pageTextManager = PageTextManager(database)
-  val activeWindowLines = MutableStateFlow<List<TimedLine>>(emptyList())
-  val activeLineIndex = MutableStateFlow<Int>(-1)
-  val currentSyncOffsetMs = MutableStateFlow<Long>(0L)
-  val isLyricsAvailable = MutableStateFlow<Boolean>(false)
-  val lyricsSource = MutableStateFlow<TextSyncSource?>(null)
-  val companionBookTitle = MutableStateFlow<String?>(null)
-  val companionBookIsbn = MutableStateFlow<String?>(null)
-  val activeChapterTitle = MutableStateFlow<String?>(null)
-  val alignmentConfidence = MutableStateFlow<Float?>(null)
-  val alignmentStrategy = MutableStateFlow<String?>(null)
-  val allCompanionChapters = MutableStateFlow<List<EpubChapter>>(emptyList())
+  var analysisDataSource: (suspend (com.example.rivulet.data.lyrics.ReadAlongTrack) -> android.media.MediaDataSource)? = null
+  val readAlong = com.example.rivulet.data.lyrics.ReadAlongRepository(
+    context.applicationContext,
+    com.example.rivulet.data.lyrics.ReadAlongStore(database),
+    com.example.rivulet.data.lyrics.AudioWindowDecoder { track ->
+      analysisDataSource?.invoke(track) ?: error("Audio analysis is not configured.")
+    },
+  )
 
   init {
     // Prime state with latest played audiobook from history
@@ -152,6 +147,7 @@ class PlaybackController(
         currentCoverUrl = latest.coverUrl
         currentInfoHash = latest.infoHash
         currentFileIndex = latest.fileIndex
+        readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(latest.infoHash, latest.fileIndex))
         _state.value =
           PlaybackUi(
             title = latest.bookTitle,
@@ -208,9 +204,7 @@ class PlaybackController(
       var ticks = 0
       while (isActive) {
         publish()
-        if (isLyricsAvailable.value) {
-          updateLyricsWindow()
-        }
+        readAlong.playback(player.currentPosition, player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L)
         delay(350)
         ticks++
         if (ticks % 10 == 0 && player.isPlaying) {
@@ -457,7 +451,7 @@ class PlaybackController(
 
     refreshBookmarks()
     if (infoHash != null && fileIndex >= 0) {
-      loadCompanionChapterForTrack(infoHash, fileIndex)
+      readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(infoHash, fileIndex))
     }
 
     player.prepare()
@@ -675,131 +669,8 @@ class PlaybackController(
   // Synchronized Text & Lyrics Controls
   // ---------------------------------------------------------------------------------------------
 
-  fun loadLyricsFromText(text: String, source: TextSyncSource, totalDurationMs: Long = player.duration) {
-    val dur = if (totalDurationMs > 0 && totalDurationMs != C.TIME_UNSET) totalDurationMs else 60_000L
-    val lines = when (source) {
-      TextSyncSource.LRC, TextSyncSource.SRT -> LrcParser.detectAndParse(text)
-      else -> PacedTimingEngine.paceText(text, dur, offsetMs = currentSyncOffsetMs.value)
-    }
-    if (lines.isNotEmpty()) {
-      pageTextManager.setSourceLines(lines, source, currentInfoHash, currentFileIndex)
-      isLyricsAvailable.value = true
-      lyricsSource.value = source
-      updateLyricsWindow()
-    }
-  }
-
-  fun attachCompanionBook(
-    bytes: ByteArray,
-    fileName: String,
-    infoHash: String,
-    audioFiles: List<AudioFile>,
-  ) {
-    scope.launch(Dispatchers.IO) {
-      try {
-        val book = EpubExtractor.extractBookFromBytes(bytes, fileName)
-        if (book.chapters.isNotEmpty()) {
-          val alignment = AudioBookAligner.align(audioFiles, book)
-          database.saveCompanionBook(infoHash, book, fileName, alignment.trackToChapterMap)
-          companionBookTitle.value = book.title
-          alignmentConfidence.value = alignment.confidence
-          alignmentStrategy.value = alignment.strategy.displayName
-          allCompanionChapters.value = book.chapters
-          companionBookIsbn.value = book.isbn
-
-          loadCompanionChapterForTrack(infoHash, currentFileIndex)
-        }
-      } catch (t: Throwable) {
-        Log.e(TAG, "Error attaching companion book $fileName for $infoHash", t)
-      }
-    }
-  }
-
-  fun loadCompanionChapterForTrack(infoHash: String, fileIndex: Int) {
-    scope.launch(Dispatchers.IO) {
-      try {
-        val summary = database.getCompanionBook(infoHash)
-        companionBookTitle.value = summary?.title
-        companionBookIsbn.value = summary?.isbn
-        if (summary != null) {
-          allCompanionChapters.value = database.getAllCompanionChapters(infoHash)
-        }
-
-        val chapter = database.getCompanionChapterForTrack(infoHash, fileIndex)
-        if (chapter != null) {
-          activeChapterTitle.value = chapter.title
-          val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 60_000L
-          val lines = PacedTimingEngine.paceChapter(chapter.text, dur, offsetMs = currentSyncOffsetMs.value)
-          if (lines.isNotEmpty()) {
-            pageTextManager.setSourceLines(lines, TextSyncSource.EPUB_PACED, infoHash, fileIndex)
-            isLyricsAvailable.value = true
-            lyricsSource.value = TextSyncSource.EPUB_PACED
-            withContext(Dispatchers.Main) {
-              updateLyricsWindow()
-            }
-          }
-        } else if (summary != null) {
-          activeChapterTitle.value = null
-        }
-      } catch (t: Throwable) {
-        Log.e(TAG, "Error loading companion chapter for $infoHash file $fileIndex", t)
-      }
-    }
-  }
-
-  fun selectChapterForCurrentTrack(chapter: EpubChapter) {
-    val hash = currentInfoHash ?: return
-    val fIndex = currentFileIndex
-    if (fIndex < 0) return
-    scope.launch(Dispatchers.IO) {
-      try {
-        database.updateChapterTrackMapping(hash, chapter.index, fIndex)
-        activeChapterTitle.value = chapter.title
-        val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 60_000L
-        val lines = PacedTimingEngine.paceChapter(chapter.text, dur, offsetMs = currentSyncOffsetMs.value)
-        if (lines.isNotEmpty()) {
-          pageTextManager.setSourceLines(lines, TextSyncSource.EPUB_PACED, hash, fIndex)
-          isLyricsAvailable.value = true
-          lyricsSource.value = TextSyncSource.EPUB_PACED
-          withContext(Dispatchers.Main) {
-            updateLyricsWindow()
-          }
-        }
-      } catch (t: Throwable) {
-        Log.e(TAG, "Error selecting chapter ${chapter.index} for $hash file $fIndex", t)
-      }
-    }
-  }
-
-  fun calibrateSyncToLine(line: TimedLine) {
-    val currentPos = player.currentPosition
-    // Shift currentSyncOffsetMs so that line.startTimeMs + newOffset == currentPos
-    val newOffset = currentPos - line.startTimeMs
-    currentSyncOffsetMs.value = newOffset
-    updateLyricsWindow()
-  }
-
   fun seekToLine(line: TimedLine) {
-    seekTo(line.startTimeMs)
-  }
-
-  fun adjustSyncOffset(deltaMs: Long) {
-    currentSyncOffsetMs.value += deltaMs
-    updateLyricsWindow()
-  }
-
-  fun updateLyricsWindow() {
-    val hash = currentInfoHash ?: return
-    val index = currentFileIndex
-    val pos = player.currentPosition
-    val dur = if (player.duration > 0 && player.duration != C.TIME_UNSET) player.duration else 0L
-    val window = pageTextManager.getActiveWindow(hash, index, pos, dur)
-    activeWindowLines.value = window
-    val offset = currentSyncOffsetMs.value
-    val matchIndex = window.indexOfFirst { line ->
-      pos >= (line.startTimeMs + offset) && pos < (line.endTimeMs + offset)
-    }
-    activeLineIndex.value = matchIndex
+    if (line.isTimed) seekTo(com.example.rivulet.data.lyrics.ReadAlongTimeline.seekPosition(line, readAlong.state.value.offsetMs))
   }
 
   private fun describePlaybackError(error: PlaybackException): String {

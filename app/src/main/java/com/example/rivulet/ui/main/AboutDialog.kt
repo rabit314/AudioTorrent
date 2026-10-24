@@ -143,7 +143,7 @@ fun AboutDialog(
           FeatureRow(
             icon = Icons.AutoMirrored.Filled.MenuBook,
             title = "Companion Ebook Read-Along",
-            description = "Standard EPUB chapter alignment with zlib.li web companion and 1-tap sync.",
+            description = "Native ebook lookup, EPUB/TXT imports and on-phone English narration matching with saved sync corrections.",
           )
           FeatureRow(
             icon = Icons.Default.Headphones,

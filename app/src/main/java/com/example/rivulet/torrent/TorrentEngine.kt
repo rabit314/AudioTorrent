@@ -326,6 +326,41 @@ class TorrentEngine(
     return if (isWanted) Priority.DEFAULT else Priority.IGNORE
   }
 
+  /** Analysis borrows the current lease; it never prepares a different stream or arms deadlines. */
+  suspend fun analysisDataSource(hash: String, fileIndex: Int): android.media.MediaDataSource = withContext(Dispatchers.IO) {
+    val stream = streamLock.withLock {
+      val current = activeStream
+      check(current != null && !current.isClosed && current.infoHash == hash && current.fileIndex == fileIndex) {
+        "Start this audio track before preparing read-along."
+      }
+      current.retain()
+      current
+    }
+    object : android.media.MediaDataSource() {
+      private val input = RandomAccessFile(stream.file, "r")
+      private var closed = false
+      @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (closed || stream.isClosed) throw java.io.IOException("Audio analysis was cancelled.")
+        if (position >= stream.fileSize) return -1
+        if (size == 0) return 0
+        val count = minOf(size.toLong(), stream.fileSize - position, 64 * 1024L).toInt()
+        try {
+          kotlinx.coroutines.runBlocking { stream.awaitRange(position, position + count - 1, 2_000) }
+          input.seek(position); input.readFully(buffer, offset, count)
+          return count
+        } catch (error: Exception) { throw java.io.IOException("Waiting for verified audio data. Playback can continue.", error) }
+      }
+      override fun getSize() = stream.fileSize
+      @Synchronized override fun close() {
+        if (!closed) {
+          closed = true
+          input.close()
+          kotlinx.coroutines.runBlocking { releaseStream(stream) }
+        }
+      }
+    }
+  }
+
   suspend fun releaseStream(stream: StreamSession) {
     streamLock.withLock {
       if (stream.release() > 0) return@withLock

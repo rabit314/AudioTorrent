@@ -51,7 +51,7 @@ Get the latest installable pre-release APK directly for your Android phone or ta
 - 🌙 **Sleep Timer with Fade-Out** — Set timers for 15m, 30m, 45m, 60m, custom durations, or until the end of the current track, featuring a gentle 30-second linear volume fade-out.
 - 📑 **Natural Chapter Queuing** — Multi-file audiobooks sort naturally (`Chapter 1`, `Chapter 2`, ..., `Chapter 10`), with seamless auto-advance across tracks, unified chapter drawer, and persistent bookmarks with personal notes.
 - 📚 **Audiobook Discovery** — Built-in AudiobookBay integration with trending feeds, audio-only media filtering, search history, and instant magnet resolution.
-- 📖 **Companion Read-Along (Beta)** — Attach companion EPUB, LRC, SRT, or plain-text files. Features auto-aligned sentence pacing, visual glowing sentence tracking, and 1-tap sync calibration.
+- 📖 **Companion Read-Along (Beta)** — Find an ebook through native Z-Library search or import EPUB, TXT, LRC, and SRT files. English narration matching runs on the phone with a separately downloaded 60 MB model. Includes sentence highlighting, auto-follow, chapter hints, and saved sync corrections; estimated timing remains an explicit fallback.
 - 💾 **Offline Library Management** — Download individual chapters or entire audio torrents to local storage with automated offline persistence.
 - 🔔 **Media3 Foreground Service** — Complete background audio playback with lock screen album art, interactive notification with live Play/Pause toggles, and Bluetooth headset controls.
 
