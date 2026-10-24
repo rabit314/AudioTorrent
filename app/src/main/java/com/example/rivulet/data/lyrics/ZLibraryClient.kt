@@ -9,10 +9,15 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-data class BookEdition(val title: String, val author: String, val language: String, val format: String, val isbn: String?, val url: String, val downloadUrl: String? = null)
+data class BookEdition(val title: String, val author: String, val language: String, val format: String, val isbn: String?, val url: String, val downloadUrl: String? = null, val coverUrl: String? = null)
 class SiteAccessRequired(val url: String) : IOException("Z-Library needs a browser access check or login.")
 
-class ZLibraryClient(private val cookies: (String) -> String? = { null }) {
+interface BookCatalog {
+  fun search(query: String): List<BookEdition>
+  fun download(edition: BookEdition, renderedHtml: String? = null): Triple<ByteArray, String, String>
+}
+
+class ZLibraryClient(private val cookies: (String) -> String? = { null }) : BookCatalog {
   private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
     .addNetworkInterceptor { chain ->
       val url = chain.request().url.toString()
@@ -22,7 +27,7 @@ class ZLibraryClient(private val cookies: (String) -> String? = { null }) {
       chain.proceed(builder.build())
     }.build()
 
-  fun search(query: String): List<BookEdition> {
+  override fun search(query: String): List<BookEdition> {
     require(query.isNotBlank()) { "Enter a book title." }
     val url = "$BASE/s/${URLEncoder.encode(query.trim(), "UTF-8").replace("+", "%20")}?extensions%5B%5D=epub"
     val html = page(url)
@@ -31,7 +36,7 @@ class ZLibraryClient(private val cookies: (String) -> String? = { null }) {
     }
   }
 
-  fun download(edition: BookEdition, renderedHtml: String? = null): Triple<ByteArray, String, String> {
+  override fun download(edition: BookEdition, renderedHtml: String?): Triple<ByteArray, String, String> {
     val url = edition.downloadUrl ?: run {
       val html = renderedHtml ?: page(edition.url)
       val doc = Jsoup.parse(html, edition.url)
@@ -106,7 +111,12 @@ class ZLibraryClient(private val cookies: (String) -> String? = { null }) {
         if (format.isNotBlank() && format !in setOf("EPUB", "TXT")) return@forEach
         val isbn = IsbnValidator.extractFirstValidIsbn(card.attr("isbn").ifBlank { card.text() })
         val download = card.attr("download").takeIf { it.isNotBlank() }?.let { baseUrl.toHttpUrl().resolve(it)?.toString() }
-        result[url] = BookEdition(title, author, language, format.ifBlank { "EPUB" }, isbn, url, download)
+        val image = card.selectFirst("img")
+        val cover = sequenceOf(image?.attr("data-src"), image?.attr("data-original"), image?.attr("src"), card.attr("cover"))
+          .filterNotNull().map { it.trim() }.filter { it.isNotBlank() }
+          .mapNotNull { baseUrl.toHttpUrl().resolve(it)?.toString() }
+          .firstOrNull { runCatching { validateUrl(it) }.isSuccess }
+        result[url] = BookEdition(title, author, language, format.ifBlank { "EPUB" }, isbn, url, download, cover)
       }
       return result.values.toList()
     }

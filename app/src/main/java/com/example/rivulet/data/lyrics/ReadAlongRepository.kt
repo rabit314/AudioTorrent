@@ -25,6 +25,7 @@ class ReadAlongRepository(
   private val decoder: AudioWindowDecoder,
   private val speech: WhisperEngine = WhisperEngine(),
   private val models: SpeechModelManager = SpeechModelManager(context),
+  private val library: BookCatalog = ZLibraryClient { url -> android.webkit.CookieManager.getInstance().getCookie(url) },
 ) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val mutable = MutableStateFlow(ReadAlongState())
@@ -37,7 +38,11 @@ class ReadAlongRepository(
   private var lookupJob: Job? = null
   private var offsetJob: Job? = null
   private var exhaustedBase: Long? = null
-  private val library = ZLibraryClient { url -> android.webkit.CookieManager.getInstance().getCookie(url) }
+  private var searchKey: String? = null
+  private var searchSucceeded = false
+  private var searchResults: List<BookEdition> = emptyList()
+  private var lookupSequence = 0L
+  private var recoveryAction: (() -> Unit)? = null
   private var source: StoredReadAlongBook? = null
   private var sentences: List<BookSentence> = emptyList()
   private var matcher: NarrationMatcher? = null
@@ -52,6 +57,7 @@ class ReadAlongRepository(
     generation++
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel()
     source = null; sentences = emptyList(); matcher = null; timings.clear(); estimated = false
+    searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; recoveryAction = null
     positionMs = 0; durationMs = 0; selectedHint = null; exhaustedBase = null
     mutable.value = ReadAlongState(track = track, phase = ReadAlongPhase.LOADING)
     load(track, generation)
@@ -62,6 +68,7 @@ class ReadAlongRepository(
     loadJob?.cancel()
     loadJob = scope.launch {
       try {
+        offsetJob?.join()
         val saved = withContext(Dispatchers.IO) {
           Triple(store.book(track), store.offset(track), store.chapterHint(track))
         }
@@ -81,11 +88,15 @@ class ReadAlongRepository(
           timings = LrcParser.detectAndParse(book.book.chapters.joinToString("\n") { it.text }).associateByTo(LinkedHashMap()) { it.id }
           sentences = timings.values.map { BookSentence(it.id, 1, book.book.title, it.text) }
         }
+        val lines = sentences.map { sentence -> timings[sentence.id] ?: TimedLine(sentence.id, -1, -1, sentence.text) }
         mutable.value = ReadAlongState(track = track, bookId = book.id, title = book.book.title, isbn = book.book.isbn,
-          chapters = book.book.chapters, offsetMs = saved.second, phase = ReadAlongPhase.READY, source = book.source, trackIndices = indices)
-        publishLines()
+          chapters = book.book.chapters, offsetMs = saved.second, phase = ReadAlongPhase.READY, source = book.source, trackIndices = indices,
+          lines = lines, matchedSentences = lines.count { it.isTimed }, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, saved.second))
         scheduleAnalysis()
-      } catch (error: Exception) { fail(error, track, version) }
+      } catch (error: Exception) {
+        fail(error, track, version)
+        offerRecovery(track, version, "Retry loading text") { load(track, version) }
+      }
     }
   }
 
@@ -122,18 +133,35 @@ class ReadAlongRepository(
     startImport(track, selectedTracks) { Triple(bytes, name, mime) }
   }
 
-  fun searchBooks(query: String) {
+  fun searchBooks(query: String, force: Boolean = false) {
     val track = mutable.value.track ?: return
+    val normalized = query.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
+    if (normalized.isBlank()) { mutable.update { it.copy(lookupMessage = "Enter a book title.") }; return }
+    if (!force && searchKey == normalized && searchSucceeded) {
+      mutable.update { it.copy(editions = searchResults, lookupMessage = if (searchResults.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+      return
+    }
+    if (!force && searchKey == normalized && lookupJob?.isActive == true && mutable.value.searching) return
+    searchKey = normalized; searchSucceeded = false
     val version = generation
+    val request = ++lookupSequence
     lookupJob?.cancel()
+    clearRecovery()
     mutable.update { it.copy(searching = true, editions = emptyList(), accessUrl = null, lookupMessage = null) }
     lookupJob = scope.launch {
       try {
         val results = withContext(Dispatchers.IO) { library.search(query) }
-        if (current(track, version)) mutable.update { it.copy(searching = false, editions = results, lookupMessage = if (results.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+        if (current(track, version) && request == lookupSequence) {
+          searchSucceeded = true
+          searchResults = results
+          mutable.update { it.copy(searching = false, editions = results, lookupMessage = if (results.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+        }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
-        if (current(track, version)) mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
+        if (current(track, version) && request == lookupSequence) {
+          mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
+          if (error !is SiteAccessRequired) offerRecovery(track, version, "Retry search") { searchBooks(query, force = true) }
+        }
       }
     }
   }
@@ -141,18 +169,23 @@ class ReadAlongRepository(
   fun downloadEdition(edition: BookEdition, selectedTracks: Set<Int>, renderedHtml: String? = null) {
     val track = mutable.value.track ?: return
     val version = generation
+    val request = ++lookupSequence
     lookupJob?.cancel()
+    clearRecovery()
     mutable.update { it.copy(searching = true, lookupMessage = "Downloading ${edition.title}…", accessUrl = null) }
     lookupJob = scope.launch {
       try {
         val (bytes, name, mime) = withContext(Dispatchers.IO) { library.download(edition, renderedHtml) }
-        if (current(track, version)) {
+        if (current(track, version) && request == lookupSequence) {
           mutable.update { it.copy(searching = false, editions = emptyList(), lookupMessage = null) }
           importBytes(bytes, name, mime, selectedTracks)
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
-        if (current(track, version)) mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
+        if (current(track, version) && request == lookupSequence) {
+          mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
+          if (error !is SiteAccessRequired) offerRecovery(track, version, "Retry ebook download") { downloadEdition(edition, selectedTracks, renderedHtml) }
+        }
       }
     }
   }
@@ -161,10 +194,15 @@ class ReadAlongRepository(
 
   fun acceptRenderedSearch(html: String, url: String) {
     val editions = ZLibraryClient.parseResults(html, url)
+    searchSucceeded = true
+    searchResults = editions
     mutable.update { it.copy(accessUrl = null, searching = false, editions = editions, lookupMessage = if (editions.isEmpty()) "No book editions were found on this page. Search again or import an ebook." else null) }
   }
 
-  fun reportImportError(message: String) { mutable.update { it.copy(phase = ReadAlongPhase.ERROR, message = message) } }
+  fun reportImportError(message: String) {
+    recoveryAction = null
+    mutable.update { it.copy(phase = ReadAlongPhase.ERROR, message = message, recoveryLabel = "Choose another file", recovery = ReadAlongRecovery.PICK_FILE) }
+  }
 
   fun updateTrackSelection(indices: Set<Int>) {
     val track = mutable.value.track ?: return
@@ -181,8 +219,9 @@ class ReadAlongRepository(
   private fun startImport(track: ReadAlongTrack, selectedTracks: Set<Int>, read: () -> Triple<ByteArray, String, String?>) {
     generation++
     val version = generation
-    loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel()
-    mutable.update { it.copy(phase = ReadAlongPhase.LOADING, message = "Importing companion text…") }
+    loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
+    clearRecovery()
+    mutable.update { it.copy(phase = ReadAlongPhase.LOADING, searching = false, accessUrl = null, message = "Importing companion text…") }
     importJob = scope.launch {
       try {
         withContext(Dispatchers.IO) {
@@ -199,26 +238,50 @@ class ReadAlongRepository(
           store.attach(track, StoredReadAlongBook(track.infoHash + ":" + ReadAlongText.digest(bytes), book, name, type), selectedTracks + track.fileIndex)
         }
         if (current(track, version)) load(track, version)
-      } catch (error: Exception) { fail(error, track, version) }
+      } catch (error: Exception) {
+        fail(error, track, version)
+        if (current(track, version)) {
+          if (error is java.io.IOException) offerRecovery(track, version, "Retry import") { startImport(track, selectedTracks, read) }
+          else reportImportError(error.message ?: "Choose a different ebook file.")
+        }
+      }
     }
   }
 
   fun retry() {
-    val track = mutable.value.track ?: return
-    if (source == null) load(track, generation) else { mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }; scheduleAnalysis() }
+    val action = recoveryAction ?: return
+    clearRecovery()
+    action()
+  }
+
+  private fun clearRecovery() {
+    recoveryAction = null
+    mutable.update { it.copy(recoveryLabel = null, recovery = null) }
+  }
+
+  private fun offerRecovery(track: ReadAlongTrack, version: Long, label: String, action: () -> Unit) {
+    if (!current(track, version)) return
+    recoveryAction = { if (current(track, version)) action() }
+    mutable.update { it.copy(recoveryLabel = label, recovery = ReadAlongRecovery.RETRY) }
   }
 
   fun downloadModel() {
     if (modelJob?.isActive == true) return
     modelJob = scope.launch {
+      val track = mutable.value.track
+      val version = generation
       try {
         mutable.update { it.copy(modelProgress = 0, message = "Downloading the English speech model…") }
         models.download { progress -> mutable.update { it.copy(modelProgress = progress) } }
-        mutable.update { it.copy(modelProgress = null, phase = if (source == null) ReadAlongPhase.EMPTY else ReadAlongPhase.READY, message = null) }
+        mutable.update { it.copy(modelProgress = null, phase = if (it.phase == ReadAlongPhase.NEEDS_MODEL) ReadAlongPhase.READY else it.phase, message = it.message?.takeUnless { text -> text.startsWith("Downloading the English") }) }
         scheduleAnalysis()
       } catch (error: Exception) {
         if (error is CancellationException) throw error
-        mutable.update { it.copy(modelProgress = null, phase = ReadAlongPhase.ERROR, message = error.message ?: "Model download failed.") }
+        mutable.update { it.copy(modelProgress = null) }
+        if (track != null && current(track, version)) {
+          fail(error, track, version)
+          offerRecovery(track, version, "Retry model download") { downloadModel() }
+        }
       }
     }
   }
@@ -228,6 +291,7 @@ class ReadAlongRepository(
     val book = source ?: return
     val track = mutable.value.track ?: return
     if (!visible || estimated || book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
+    if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
     val requestedBase = ((positionMs - 5_000).coerceAtLeast(0) / 20_000) * 20_000
     if (exhaustedBase == requestedBase) return
     if (!models.isInstalled()) {
@@ -255,7 +319,7 @@ class ReadAlongRepository(
           withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines) }
           if (!current(track, version)) return@launch
           lines.forEach { timings[it.id] = it }
-          mutable.update { it.copy(analysisMillis = android.os.SystemClock.elapsedRealtime() - began, message = if (lines.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else null) }
+          mutable.update { it.copy(alignmentAttempted = true, analysisMillis = android.os.SystemClock.elapsedRealtime() - began, message = if (lines.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else null) }
           publishLines()
           delay(100)
         }
@@ -264,8 +328,11 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         if (current(track, version)) {
           mutable.update { it.copy(phase = ReadAlongPhase.ERROR, message = error.message ?: "Could not prepare speech synchronization.") }
-          // Missing pieces are retried without disturbing the player's download priorities.
-          delay(5_000)
+          offerRecovery(track, version, "Retry matching") {
+            mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }
+            analysisJob = null
+            scheduleAnalysis()
+          }
         }
       } finally { analysisStartMs = -1 }
     }
@@ -277,19 +344,22 @@ class ReadAlongRepository(
     val track = mutable.value.track ?: return
     val bookId = mutable.value.bookId ?: return
     mutable.update { it.copy(offsetMs = value, activeLineIndex = ReadAlongTimeline.activeIndex(it.lines, positionMs, value)) }
+    if (estimated || mutable.value.source == TextSyncSource.EPUB_PACED) return
     val previous = offsetJob
     offsetJob = scope.launch { previous?.join(); withContext(Dispatchers.IO) { store.setOffset(track, value, bookId) } }
   }
 
   fun chooseChapter(chapter: EpubChapter) {
+    if (!mutable.value.canChooseChapter || mutable.value.phase == ReadAlongPhase.LOADING) return
     val track = mutable.value.track ?: return
     val book = source ?: return
     generation++
     val version = generation
     val index = sentences.indexOfFirst { it.chapterIndex == chapter.index }
-    analysisJob?.cancel(); analysisJob = null
+    analysisJob?.cancel(); analysisJob = null; lookupJob?.cancel(); lookupSequence++
+    clearRecovery()
     exhaustedBase = null
-    mutable.update { it.copy(activeLineIndex = -1, message = "Chapter selected: ${chapter.title}. Preparing narration match…") }
+    mutable.update { it.copy(activeLineIndex = -1, alignmentAttempted = false, searching = false, accessUrl = null, message = "Chapter selected: ${chapter.title}. Preparing narration match…") }
     scope.launch {
       try {
         withContext(Dispatchers.IO) { store.setChapterHint(track, chapter.index); store.resetAlignment(track, book.id) }
@@ -303,9 +373,11 @@ class ReadAlongRepository(
   private var selectedHint: Int? = null
 
   fun useEstimatedTiming() {
+    if (!mutable.value.canEstimate) return
     val book = source ?: return
     if (durationMs <= 0) { mutable.update { it.copy(message = "Wait until the audio duration is known.") }; return }
     analysisJob?.cancel(); analysisJob = null; estimated = true
+    clearRecovery()
     val text = book.book.chapters.joinToString("\n\n") { it.text }
     val paced = PacedTimingEngine.paceText(text, durationMs)
     sentences = paced.map { BookSentence(it.id, 1, book.book.title, it.text) }
@@ -315,9 +387,12 @@ class ReadAlongRepository(
   }
 
   fun useNarrationTiming() {
+    if (!estimated) return
     estimated = false
     val track = mutable.value.track ?: return
-    generation++; analysisJob?.cancel(); load(track, generation)
+    generation++; analysisJob?.cancel()
+    mutable.update { it.copy(phase = ReadAlongPhase.LOADING, message = "Restoring narration timing…") }
+    load(track, generation)
   }
 
   private fun publishLines() {

@@ -1,591 +1,74 @@
 package com.example.rivulet.ui.player
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Bedtime
-import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FormatListNumbered
-import androidx.compose.material.icons.filled.FormatQuote
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.example.rivulet.AppContainer
 import com.example.rivulet.data.lyrics.BookTitleCleaner
 import com.example.rivulet.ui.formatDuration
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun PlayerScreen(
-  container: AppContainer,
-  onBack: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
+fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier = Modifier) {
   val state by container.playback.state.collectAsStateWithLifecycle()
   val queueTracks by container.playback.currentQueue.collectAsStateWithLifecycle()
   val currentQueueIndex by container.playback.currentQueueIndex.collectAsStateWithLifecycle()
   val bookmarks by container.playback.bookmarks.collectAsStateWithLifecycle()
-  val readAlong by container.playback.readAlong.state.collectAsStateWithLifecycle()
-  val activeWindowLines = readAlong.lines
-  val activeLineIndex = readAlong.activeLineIndex
-  val companionBookTitle = readAlong.title
-  val isLyricsAvailable = readAlong.bookId != null
-  val readAlongTorrents by container.engine.torrents.collectAsStateWithLifecycle()
-
-  var dragValue by remember { mutableStateOf<Float?>(null) }
+  val torrents by container.engine.torrents.collectAsStateWithLifecycle()
   var showSpeedDialog by remember { mutableStateOf(false) }
-  var showSleepDialog by remember { mutableStateOf(false) }
-  var showLyricsSheet by remember { mutableStateOf(false) }
   var showChaptersSheet by remember { mutableStateOf(false) }
   var showAddBookmarkDialog by remember { mutableStateOf(false) }
   var newBookmarkNote by remember { mutableStateOf("") }
   var selectedChaptersTab by remember { mutableStateOf(0) }
-  var jumpIntervalMode by remember { mutableStateOf(0) }
   val coroutineScope = rememberCoroutineScope()
-  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
-
-  Scaffold(
-    modifier = modifier.safeDrawingPadding(),
-    topBar = {
-      TopAppBar(
-        title = {
-          Column {
-            Text("Now playing", style = MaterialTheme.typography.titleMedium)
-            if (queueTracks.isNotEmpty() && currentQueueIndex >= 0) {
-              Text(
-                "Chapter ${currentQueueIndex + 1} of ${queueTracks.size}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-          }
-        },
-        navigationIcon = {
-          IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-          }
-        },
-        actions = {
-          IconButton(onClick = { showAddBookmarkDialog = true }) {
-            Icon(
-              Icons.Default.BookmarkBorder,
-              contentDescription = "Add Bookmark",
-              tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          IconButton(onClick = { showChaptersSheet = true }) {
-            Icon(
-              Icons.Default.FormatListNumbered,
-              contentDescription = "Chapters & Queue",
-              tint = if (queueTracks.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          IconButton(onClick = { showLyricsSheet = true }) {
-            Icon(
-              Icons.Default.FormatQuote,
-              contentDescription = "Read Along (Lyrics)",
-              tint = if (isLyricsAvailable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-        },
-      )
+  val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
+  PlayerLayout(
+    state = state, title = cleanBook.ifBlank { state.title }, subtitle = state.title,
+    chapterLabel = if (currentQueueIndex >= 0) "Chapter ${currentQueueIndex + 1} of ${queueTracks.size}" else null,
+    onBack = onBack, onBookmark = { showAddBookmarkDialog = true }, onQueue = { showChaptersSheet = true },
+    onPrevious = { container.playback.playPrevious() }, onBackTen = { container.playback.seekBy(-10_000) },
+    onPlayPause = { container.playback.togglePlayPause() }, onForwardThirty = { container.playback.seekBy(30_000) },
+    onNext = { container.playback.playNext() }, onSeek = { position ->
+      val current = container.playback.state.value
+      if (current.infoHash == state.infoHash && current.fileIndex == state.fileIndex) container.playback.seekTo(position)
     },
-  ) { padding ->
-    Column(
-      modifier =
-        Modifier.fillMaxSize()
-          .padding(padding)
-          .verticalScroll(rememberScrollState())
-          .padding(horizontal = 24.dp),
-      horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      // Shift upper block down slightly for balanced screen proportions and thumb reach
-      Spacer(Modifier.height(38.dp))
-
-      Box(
-        modifier =
-          Modifier.size(240.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
-      ) {
-        if (!state.coverUrl.isNullOrBlank()) {
-          AsyncImage(
-            model = state.coverUrl,
-            contentDescription = state.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-          )
-        } else {
-          Icon(
-            Icons.Default.PlayArrow,
-            contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.primary,
-          )
-        }
-      }
-
-      Spacer(Modifier.height(20.dp))
-
-      Text(
-        state.title.ifBlank { "Nothing playing" },
-        style = MaterialTheme.typography.titleLarge,
-        textAlign = TextAlign.Center,
-        maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
-      )
-      Spacer(Modifier.height(6.dp))
-      Text(
-        state.subtitle,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-      )
-
-      Spacer(Modifier.height(20.dp))
-
-      val duration = state.durationMs.coerceAtLeast(1L)
-      val sliderValue =
-        (dragValue ?: (state.positionMs.toFloat() / duration.toFloat())).coerceIn(0f, 1f)
-
-      Slider(
-        value = sliderValue,
-        onValueChange = { dragValue = it },
-        onValueChangeFinished = {
-          dragValue?.let { container.playback.seekTo((it * duration).toLong()) }
-          dragValue = null
-        },
-        enabled = state.hasMedia && state.durationMs > 0L,
-        modifier = Modifier.fillMaxWidth(),
-      )
-
-      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(formatDuration(state.positionMs), style = MaterialTheme.typography.labelMedium)
-        if (state.bufferedMs > state.positionMs) {
-          val bufferSec = (state.bufferedMs - state.positionMs) / 1000L
-          Text(
-            "+${bufferSec}s buffer",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-          )
-        }
-        Text(formatDuration(state.durationMs), style = MaterialTheme.typography.labelMedium)
-      }
-
-      Spacer(Modifier.height(16.dp))
-
-      // Playback Controls Row: Prev Track | -10s | Play/Pause | +30s | Next Track
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        IconButton(
-          onClick = { container.playback.playPrevious() },
-          enabled = state.hasPrevious || state.positionMs > 3000L,
-          modifier = Modifier.size(44.dp),
-        ) {
-          Icon(
-            Icons.Default.SkipPrevious,
-            contentDescription = "Previous Track",
-            modifier = Modifier.size(30.dp),
-            tint = if (state.hasPrevious || state.positionMs > 3000L) {
-              MaterialTheme.colorScheme.onSurface
-            } else {
-              MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            },
-          )
-        }
-
-        Spacer(Modifier.width(10.dp))
-
-        val backMs = if (jumpIntervalMode == 1) 15_000L else 10_000L
-        val backLabel = if (jumpIntervalMode == 1) "−15s" else "−10s"
-
-        FilledTonalIconButton(
-          onClick = { container.playback.seekBy(-backMs) },
-          modifier = Modifier.size(48.dp),
-          colors = IconButtonDefaults.filledTonalIconButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-          ),
-        ) {
-          Text(
-            backLabel,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-          )
-        }
-
-        Spacer(Modifier.width(14.dp))
-
-        FilledIconButton(
-          onClick = { container.playback.togglePlayPause() },
-          modifier = Modifier.size(68.dp),
-        ) {
-          if (state.isPlaying) {
-            PauseGlyph(
-              modifier = Modifier.size(28.dp),
-              color = MaterialTheme.colorScheme.onPrimary,
-            )
-          } else {
-            Icon(
-              Icons.Default.PlayArrow,
-              contentDescription = "Play",
-              modifier = Modifier.size(38.dp),
-            )
-          }
-        }
-
-        Spacer(Modifier.width(14.dp))
-
-        FilledTonalIconButton(
-          onClick = { container.playback.seekBy(30_000L) },
-          modifier = Modifier.size(48.dp),
-          colors = IconButtonDefaults.filledTonalIconButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-            contentColor = MaterialTheme.colorScheme.onSurface,
-          ),
-        ) {
-          Text(
-            "+30s",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-          )
-        }
-
-        Spacer(Modifier.width(10.dp))
-
-        IconButton(
-          onClick = { container.playback.playNext() },
-          enabled = state.hasNext,
-          modifier = Modifier.size(44.dp),
-        ) {
-          Icon(
-            Icons.Default.SkipNext,
-            contentDescription = "Next Track",
-            modifier = Modifier.size(30.dp),
-            tint = if (state.hasNext) {
-              MaterialTheme.colorScheme.onSurface
-            } else {
-              MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            },
-          )
-        }
-      }
-
-      Spacer(Modifier.height(20.dp))
-
-      // Audio Control Dock: Speed | Sleep | Voice Boost | Silence Trim | Jump Interval
-      Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        border = BorderStroke(
-          1.dp,
-          MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-        ),
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-          horizontalArrangement = Arrangement.SpaceEvenly,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          // Speed
-          PlayerActionTile(
-            icon = Icons.Default.Speed,
-            label = if (state.speed == 1.0f) "1.0×" else "${state.speed}×",
-            isActive = state.speed != 1.0f,
-            contentDescription = "Playback Speed: ${state.speed}x",
-            onClick = { showSpeedDialog = true },
-            modifier = Modifier.weight(1f),
-          )
-
-          // Sleep Timer
-          val sleepActive = state.isSleepTimerEndOfTrack || state.sleepTimerRemainingSec != null
-          val sleepLabel = when {
-            state.isSleepTimerEndOfTrack -> "End"
-            state.sleepTimerRemainingSec != null -> {
-              val sec = state.sleepTimerRemainingSec ?: 0
-              val m = sec / 60
-              val s = sec % 60
-              String.format(java.util.Locale.US, "%d:%02d", m, s)
-            }
-            else -> "Sleep"
-          }
-          PlayerActionTile(
-            icon = Icons.Default.Bedtime,
-            label = sleepLabel,
-            isActive = sleepActive,
-            contentDescription = "Sleep Timer: $sleepLabel",
-            onClick = { showSleepDialog = true },
-            modifier = Modifier.weight(1f),
-          )
-
-          // Voice Boost
-          PlayerActionTile(
-            icon = Icons.Default.GraphicEq,
-            label = "Boost",
-            isActive = state.isVoiceBoost,
-            contentDescription = "Voice Boost: ${if (state.isVoiceBoost) "Enabled" else "Disabled"}",
-            onClick = { container.playback.toggleVoiceBoost() },
-            modifier = Modifier.weight(1f),
-          )
-
-          // Silence Trim
-          PlayerActionTile(
-            icon = Icons.Default.ContentCut,
-            label = "Trim",
-            isActive = state.isSkipSilence,
-            contentDescription = "Trim Silence: ${if (state.isSkipSilence) "Enabled" else "Disabled"}",
-            onClick = { container.playback.toggleSkipSilence() },
-            modifier = Modifier.weight(1f),
-          )
-
-          // Skip Interval Toggle
-          PlayerActionTile(
-            icon = Icons.Default.Tune,
-            label = if (jumpIntervalMode == 1) "15s" else "10s",
-            isActive = jumpIntervalMode == 1,
-            contentDescription = "Skip Interval: ${if (jumpIntervalMode == 1) "-15s/+30s" else "-10s/+30s"}",
-            onClick = { jumpIntervalMode = if (jumpIntervalMode == 0) 1 else 0 },
-            modifier = Modifier.weight(1f),
-          )
-        }
-      }
-
-      Spacer(Modifier.height(20.dp))
-
-      // Spotify-style Expandable Lyrics Card
-      Card(
-        modifier =
-          Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .clickable { showLyricsSheet = true },
-        colors =
-          CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-          ),
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(14.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Icon(
-            Icons.Default.FormatQuote,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp),
-          )
-          Spacer(Modifier.width(10.dp))
-          Column(modifier = Modifier.weight(1f)) {
-            val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
-            Text(
-              if (!companionBookTitle.isNullOrBlank()) "Read Along · $companionBookTitle" else "Read Along · $cleanBook",
-              style = MaterialTheme.typography.labelMedium,
-              fontWeight = FontWeight.Bold,
-              color = MaterialTheme.colorScheme.primary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            val activeLine = activeWindowLines.getOrNull(activeLineIndex)
-            Text(
-              activeLine?.text ?: if (isLyricsAvailable) "Tap to open synced text" else "Find book text and follow the narrator",
-              style = MaterialTheme.typography.bodySmall,
-              color = if (activeLine != null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
-          Spacer(Modifier.width(8.dp))
-          Icon(
-            Icons.Default.KeyboardArrowUp,
-            contentDescription = "Expand",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-      }
-
-      Spacer(Modifier.height(16.dp))
-
-      if (state.isBuffering) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-          Spacer(Modifier.width(10.dp))
-          Text(
-            "Buffering from peers…",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-      }
-
-      state.error?.let {
-        Spacer(Modifier.height(12.dp))
-        Text(
-          it,
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.error,
-          textAlign = TextAlign.Center,
-        )
-      }
-
-      Spacer(Modifier.height(32.dp))
-    }
+    onSpeed = { showSpeedDialog = true }, onBoost = { container.playback.toggleVoiceBoost() }, modifier = modifier,
+  ) { readerModifier ->
+    LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
+      cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier)
   }
-
-  // Fine-grained playback speed selection dialog
-  if (showSpeedDialog) {
-    var customSpeed by remember { mutableStateOf(state.speed) }
-    AlertDialog(
-      onDismissRequest = { showSpeedDialog = false },
-      title = { Text("Playback speed") },
-      text = {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          Text(
-            String.format(java.util.Locale.US, "%.2f×", customSpeed),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.height(8.dp))
-          Slider(
-            value = customSpeed,
-            onValueChange = {
-              val rounded = (Math.round(it * 20.0) / 20.0).toFloat()
-              customSpeed = rounded
-              container.playback.setSpeed(rounded)
-            },
-            valueRange = 0.5f..3.0f,
-            steps = 49,
-            modifier = Modifier.fillMaxWidth(),
-          )
-          Spacer(Modifier.height(4.dp))
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            OutlinedButton(
-              onClick = {
-                val next = (customSpeed - 0.1f).coerceIn(0.5f, 3.0f)
-                customSpeed = (Math.round(next * 20.0) / 20.0).toFloat()
-                container.playback.setSpeed(customSpeed)
-              }
-            ) {
-              Text("-0.1×")
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-              listOf(1.0f, 1.25f, 1.5f, 2.0f).forEach { p ->
-                FilterChip(
-                  selected = Math.abs(customSpeed - p) < 0.04f,
-                  onClick = {
-                    customSpeed = p
-                    container.playback.setSpeed(p)
-                  },
-                  label = { Text("${p}×") }
-                )
-              }
-            }
-
-            OutlinedButton(
-              onClick = {
-                val next = (customSpeed + 0.1f).coerceIn(0.5f, 3.0f)
-                customSpeed = (Math.round(next * 20.0) / 20.0).toFloat()
-                container.playback.setSpeed(customSpeed)
-              }
-            ) {
-              Text("+0.1×")
-            }
+  if (showSpeedDialog) AlertDialog(
+    onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },
+    text = {
+      Column {
+        Text("${state.speed}×", style = MaterialTheme.typography.headlineMedium)
+        Slider(state.speed, { container.playback.setSpeed(it) }, valueRange = 0.5f..3f)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { speed ->
+            FilterChip(state.speed == speed, onClick = { container.playback.setSpeed(speed) }, label = { Text("${speed}×") })
           }
         }
-      },
-      confirmButton = {
-        TextButton(onClick = { showSpeedDialog = false }) { Text("Done") }
-      },
-    )
-  }
-
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+          TextButton(onClick = { container.playback.setSpeed((state.speed - 0.05f).coerceAtLeast(0.5f)) }) { Text("−0.05×") }
+          TextButton(onClick = { container.playback.setSpeed((state.speed + 0.05f).coerceAtMost(3f)) }) { Text("+0.05×") }
+        }
+      }
+    }, confirmButton = { TextButton(onClick = { showSpeedDialog = false }) { Text("Done") } },
+  )
   // Chapters & Bookmarks Bottom Sheet
   if (showChaptersSheet) {
     val chaptersSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
@@ -772,136 +255,4 @@ fun PlayerScreen(
     )
   }
 
-  // Sleep timer dialog
-  if (showSleepDialog) {
-    AlertDialog(
-      onDismissRequest = { showSleepDialog = false },
-      title = { Text("Sleep timer") },
-      text = {
-        Column {
-          listOf(15, 30, 45, 60).forEach { mins ->
-            TextButton(
-              onClick = {
-                container.playback.startSleepTimer(mins)
-                showSleepDialog = false
-              },
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Text("$mins minutes")
-            }
-          }
-          TextButton(
-            onClick = {
-              container.playback.startSleepTimerEndOfTrack()
-              showSleepDialog = false
-            },
-            modifier = Modifier.fillMaxWidth(),
-          ) {
-            Text("End of current track")
-          }
-          if (state.sleepTimerRemainingSec != null || state.isSleepTimerEndOfTrack) {
-            TextButton(
-              onClick = {
-                container.playback.cancelSleepTimer()
-                showSleepDialog = false
-              },
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Text("Turn off timer", color = MaterialTheme.colorScheme.error)
-            }
-          }
-        }
-      },
-      confirmButton = {
-        TextButton(onClick = { showSleepDialog = false }) { Text("Cancel") }
-      },
-    )
-  }
-
-  // Full-Screen Spotify-style Lyrics Sheet
-  if (showLyricsSheet) {
-    ModalBottomSheet(
-      onDismissRequest = { showLyricsSheet = false },
-      sheetState = sheetState,
-      containerColor = Color(0xFF0F1115),
-    ) {
-      val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
-      LyricsView(
-        repository = container.playback.readAlong,
-        audioFiles = readAlongTorrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
-        cleanBookTitle = cleanBook,
-        onSeekToLine = { line -> container.playback.seekToLine(line) },
-      )
-    }
-  }
-}
-
-@Composable
-private fun PauseGlyph(modifier: Modifier = Modifier, color: Color) {
-  Canvas(modifier) {
-    val barWidth = size.width * 0.24f
-    val gap = size.width * 0.20f
-    val left = (size.width - gap) / 2f - barWidth
-    val right = (size.width + gap) / 2f
-    drawRoundRect(
-      color = color,
-      topLeft = Offset(left, 0f),
-      size = Size(barWidth, size.height),
-      cornerRadius = CornerRadius(2f, 2f),
-    )
-    drawRoundRect(
-      color = color,
-      topLeft = Offset(right, 0f),
-      size = Size(barWidth, size.height),
-      cornerRadius = CornerRadius(2f, 2f),
-    )
-  }
-}
-
-@Composable
-private fun PlayerActionTile(
-  icon: androidx.compose.ui.graphics.vector.ImageVector,
-  label: String,
-  isActive: Boolean,
-  contentDescription: String,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  val activeColor = MaterialTheme.colorScheme.primary
-  val inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant
-  val activeContainer = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-  val inactiveContainer = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-
-  Column(
-    modifier = modifier
-      .clip(RoundedCornerShape(14.dp))
-      .clickable(onClick = onClick)
-      .padding(vertical = 8.dp, horizontal = 2.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center,
-  ) {
-    Box(
-      modifier = Modifier
-        .size(36.dp)
-        .clip(CircleShape)
-        .background(if (isActive) activeContainer else inactiveContainer),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(
-        imageVector = icon,
-        contentDescription = contentDescription,
-        tint = if (isActive) activeColor else inactiveColor,
-        modifier = Modifier.size(20.dp),
-      )
-    }
-    Spacer(Modifier.height(6.dp))
-    Text(
-      text = label,
-      style = MaterialTheme.typography.labelSmall,
-      fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-      color = if (isActive) activeColor else inactiveColor,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-    )
-  }
 }

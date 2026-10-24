@@ -66,9 +66,10 @@ class ReadAlongStore(private val database: TorrentDatabase) {
         db.delete("readalong_tracks", "info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, index.toString(), bookId))
       }
       selected.forEach { index ->
-        val previousOffset = db.rawQuery("SELECT offset_ms FROM readalong_tracks WHERE info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, index.toString(), bookId)).use { if (it.moveToFirst()) it.getLong(0) else 0L }
+        val unchanged = db.rawQuery("SELECT 1 FROM readalong_tracks WHERE info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, index.toString(), bookId)).use { it.moveToFirst() }
+        if (unchanged) return@forEach // Preserve both the offset and chapter_hint on the existing row.
         db.insertWithOnConflict("readalong_tracks", null, ContentValues().apply {
-          put("info_hash", track.infoHash); put("file_index", index); put("book_id", bookId); put("offset_ms", previousOffset)
+          put("info_hash", track.infoHash); put("file_index", index); put("book_id", bookId); put("offset_ms", 0L)
         }, SQLiteDatabase.CONFLICT_REPLACE)
       }
       db.setTransactionSuccessful()

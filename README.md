@@ -47,11 +47,10 @@ Get the latest installable pre-release APK directly for your Android phone or ta
 ## ✨ Features
 
 - ⚡ **Stream as You Download** — Open magnet links or `.torrent` files and start listening within seconds. A custom loopback HTTP range bridge and dynamic piece scheduler stream files ahead of time while prioritizing MP4 metadata tails.
-- 🎧 **Audiobook-Optimized Playback** — Pick up exactly where you left off. Includes smart pause auto-rewind (rewinds 5–15 seconds when paused for over 60 seconds), configurable speed stepper (0.5× to 3.0× in 0.1× steps), Voice Boost dialogue enhancer, and silence trimming.
-- 🌙 **Sleep Timer with Fade-Out** — Set timers for 15m, 30m, 45m, 60m, custom durations, or until the end of the current track, featuring a gentle 30-second linear volume fade-out.
+- 🎧 **Audiobook-Optimized Playback** — Pick up where you left off with smart pause auto-rewind, adjustable speed (0.5× to 3.0×), Voice Boost, a seek bar, and fixed −10s/+30s controls. Cover and text share one panel above the playback controls, with a two-column landscape layout.
 - 📑 **Natural Chapter Queuing** — Multi-file audiobooks sort naturally (`Chapter 1`, `Chapter 2`, ..., `Chapter 10`), with seamless auto-advance across tracks, unified chapter drawer, and persistent bookmarks with personal notes.
 - 📚 **Audiobook Discovery** — Built-in AudiobookBay integration with trending feeds, audio-only media filtering, search history, and instant magnet resolution.
-- 📖 **Companion Read-Along (Beta)** — Find an ebook through native Z-Library search or import EPUB, TXT, LRC, and SRT files. English narration matching runs on the phone with a separately downloaded 60 MB model. Includes sentence highlighting, auto-follow, chapter hints, and saved sync corrections; estimated timing remains an explicit fallback.
+- 📖 **Companion Read-Along (Beta)** — Find an ebook through native Z-Library results with cover thumbnails, or import EPUB, TXT, LRC, and SRT files. English narration matching runs on the phone with a separately downloaded 60 MB model. Text options contains edition replacement, track selection, chapter hints, and sync adjustments. Includes sentence highlighting, tap-to-seek, and Follow narration; temporary estimated timing is offered only when matching is unavailable.
 - 💾 **Offline Library Management** — Download individual chapters or entire audio torrents to local storage with automated offline persistence.
 - 🔔 **Media3 Foreground Service** — Complete background audio playback with lock screen album art, interactive notification with live Play/Pause toggles, and Bluetooth headset controls.
 

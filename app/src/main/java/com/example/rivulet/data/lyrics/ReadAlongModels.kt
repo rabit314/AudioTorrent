@@ -6,6 +6,7 @@ import java.text.BreakIterator
 import java.util.Locale
 
 enum class ReadAlongPhase { EMPTY, LOADING, READY, PREPARING, NEEDS_MODEL, ERROR }
+enum class ReadAlongRecovery { RETRY, PICK_FILE }
 
 data class ReadAlongTrack(val infoHash: String, val fileIndex: Int)
 
@@ -31,7 +32,23 @@ data class ReadAlongState(
   val accessUrl: String? = null,
   val lookupMessage: String? = null,
   val trackIndices: Set<Int> = emptySet(),
-)
+  val recoveryLabel: String? = null,
+  val recovery: ReadAlongRecovery? = null,
+  val alignmentAttempted: Boolean = false,
+) {
+  val canEstimate: Boolean get() = bookId != null && source == TextSyncSource.NARRATION && matchedSentences == 0 &&
+    (phase == ReadAlongPhase.NEEDS_MODEL ||
+      (phase == ReadAlongPhase.ERROR && recoveryLabel in setOf("Retry matching", "Retry model download")) ||
+      (phase == ReadAlongPhase.READY && alignmentAttempted))
+  val canChooseChapter: Boolean get() = source == TextSyncSource.NARRATION && chapters.isNotEmpty()
+  val progressLabel: String? get() = when {
+    modelProgress != null -> "Downloading speech model… $modelProgress%"
+    searching -> lookupMessage?.takeIf { it.startsWith("Downloading ") } ?: "Searching for book text…"
+    phase == ReadAlongPhase.LOADING -> "Loading book text…"
+    phase == ReadAlongPhase.PREPARING -> "Preparing read-along…"
+    else -> null
+  }
+}
 
 data class StoredReadAlongBook(val id: String, val book: EpubBook, val fileName: String, val source: TextSyncSource = TextSyncSource.NARRATION)
 data class SpeechWord(val text: String, val startMs: Long, val endMs: Long)

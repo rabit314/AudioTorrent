@@ -11,19 +11,28 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.ImageLoader
+import coil.compose.SubcomposeAsyncImage
+import coil.imageLoader
 import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.lyrics.*
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun LyricsView(
   repository: ReadAlongRepository,
@@ -33,13 +42,15 @@ fun LyricsView(
   modifier: Modifier = Modifier,
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
-  val list = rememberLazyListState()
+  val list = key(state.track) { rememberLazyListState() }
   val dragged by list.interactionSource.collectIsDraggedAsState()
   var following by rememberSaveable(state.track) { mutableStateOf(true) }
   var query by rememberSaveable(state.track) { mutableStateOf(cleanBookTitle) }
   var showSearch by rememberSaveable(state.track) { mutableStateOf(false) }
-  var showTracks by remember { mutableStateOf(false) }
-  var showChapters by remember { mutableStateOf(false) }
+  var showOptions by remember { mutableStateOf(false) }
+  var showTracks by remember(state.track) { mutableStateOf(false) }
+  var showChapters by remember(state.track) { mutableStateOf(false) }
+  var showAdjustment by remember(state.track) { mutableStateOf(false) }
   var selectedTracks by remember(state.track, audioFiles) {
     mutableStateOf(ReadAlongText.defaultTracks(audioFiles, state.track?.fileIndex ?: -1))
   }
@@ -52,86 +63,54 @@ fun LyricsView(
       else repository.reportImportError("The audio track changed while the picker was open. Select the file again for the current book.")
     }
   }
+  val importFile = {
+    pickedFor = state.track; pickedTracks = selectedTracks
+    picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
+  }
+  val findText = { pendingEdition = null; showSearch = true; repository.searchBooks(query) }
   DisposableEffect(repository) {
     repository.setVisible(true)
     onDispose { repository.setVisible(false) }
   }
-  LaunchedEffect(state.track, state.phase) {
-    if (state.bookId == null && state.phase == ReadAlongPhase.EMPTY) {
-      showSearch = true
-      repository.searchBooks(query)
-    }
+  LaunchedEffect(state.phase, state.bookId) {
+    if (state.phase == ReadAlongPhase.READY && state.bookId != null && pendingEdition != null && !state.searching) showSearch = false
   }
-  LaunchedEffect(state.bookId) { if (state.bookId != null) showSearch = false }
   LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
   LaunchedEffect(dragged) { if (dragged) following = false }
   LaunchedEffect(state.track, state.activeLineIndex, following) {
     if (following && state.activeLineIndex in state.lines.indices) list.animateScrollToItem((state.activeLineIndex - 2).coerceAtLeast(0))
   }
 
-  Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-    Text(state.title ?: cleanBookTitle.ifBlank { "Read Along" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    val activeChapter = state.lines.getOrNull(state.activeLineIndex)?.let { line ->
-      state.chapters.firstOrNull { chapter -> chapter.text.contains(line.text) }?.title
-    }
-    if (activeChapter != null) Text(activeChapter, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-    state.isbn?.let { Text("ISBN $it · checksum valid", style = MaterialTheme.typography.labelSmall) }
-    if (state.source != null) Text("${state.source!!.displayName} · ${state.matchedSentences} sentences timed", style = MaterialTheme.typography.labelSmall)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-      TextButton(onClick = { showSearch = !showSearch; if (showSearch) repository.searchBooks(query) }) { Text("Find text") }
-      TextButton(onClick = {
-        pickedFor = state.track; pickedTracks = selectedTracks
-        picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
-      }) { Text("Import") }
-      TextButton(onClick = { showTracks = true }) { Text("Tracks (${selectedTracks.size})") }
-      if (state.chapters.isNotEmpty()) TextButton(onClick = { showChapters = true }) { Text("Chapters") }
-    }
-
-    if (showSearch) {
-      OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-        trailingIcon = { TextButton(onClick = { pendingEdition = null; repository.searchBooks(query) }, enabled = !state.searching) { Text("Search") } })
-      if (state.searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
-      state.lookupMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 6.dp)) }
-      if (state.editions.isNotEmpty()) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 230.dp)) {
-        items(state.editions, key = { it.url }) { edition ->
-          OutlinedCard(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), onClick = {
-            pendingEdition = edition; repository.downloadEdition(edition, selectedTracks)
-          }, enabled = !state.searching) {
-            Column(Modifier.padding(12.dp)) {
-              Text(edition.title, fontWeight = FontWeight.Bold)
-              Text(listOf(edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-              edition.isbn?.let { Text("ISBN $it", style = MaterialTheme.typography.labelSmall) }
-            }
-          }
+  Column(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+      Text(if (state.source == TextSyncSource.EPUB_PACED) "Estimated timing" else "Read along", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+      Box {
+        TextButton(onClick = { showOptions = true }) { Text("Text options") }
+        DropdownMenu(showOptions, onDismissRequest = { showOptions = false }) {
+          DropdownMenuItem(text = { Text(if (state.bookId == null) "Find book text" else "Replace edition") }, onClick = { showOptions = false; findText() })
+          DropdownMenuItem(text = { Text("Import EPUB / TXT / LRC / SRT") }, onClick = { showOptions = false; importFile() })
+          DropdownMenuItem(text = { Text("Select audio tracks") }, onClick = { showOptions = false; showTracks = true })
+          if (state.canChooseChapter) DropdownMenuItem(text = { Text("Choose chapter hint") }, onClick = { showOptions = false; showChapters = true })
+          if (state.bookId != null) DropdownMenuItem(text = { Text("Synchronization adjustment") }, onClick = { showOptions = false; showAdjustment = true })
+          if (state.canEstimate) DropdownMenuItem(text = { Text("Use estimated timing…") }, onClick = { showOptions = false; showAdjustment = true })
+          if (state.source == TextSyncSource.EPUB_PACED) DropdownMenuItem(text = { Text("Return to narration matching") }, onClick = { showOptions = false; repository.useNarrationTiming() })
         }
       }
     }
-
-    if (state.phase == ReadAlongPhase.LOADING || state.phase == ReadAlongPhase.PREPARING || state.modelProgress != null) {
-      LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
-    }
-    state.message?.let { Text(it + (state.modelProgress?.let { p -> " $p%" } ?: ""), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 6.dp)) }
-    if (state.phase == ReadAlongPhase.ERROR) TextButton(onClick = { repository.retry() }) { Text("Retry") }
-    if (state.phase == ReadAlongPhase.NEEDS_MODEL || (state.phase == ReadAlongPhase.ERROR && state.bookId != null && state.matchedSentences == 0)) {
-      FilledTonalButton(onClick = { repository.downloadModel() }, enabled = state.modelProgress == null) { Text("Download speech model · 60 MB") }
-    }
-    if (state.bookId != null) {
-      FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        TextButton(onClick = { repository.adjustOffset(-500) }) { Text("−0.5s") }
-        Text("${state.offsetMs / 1000.0}s", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.labelMedium)
-        TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
-        TextButton(onClick = { if (state.source == TextSyncSource.EPUB_PACED) repository.useNarrationTiming() else repository.useEstimatedTiming() }) {
-          Text(if (state.source == TextSyncSource.EPUB_PACED) "Match narrator" else "Estimate timing")
-        }
+    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
+    if (state.bookId == null && state.phase != ReadAlongPhase.LOADING) {
+      Text("Find your edition or import a book to read along.", style = MaterialTheme.typography.bodyMedium)
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilledTonalButton(onClick = findText) { Text("Find book text") }
+        TextButton(onClick = importFile) { Text("Import file") }
       }
     }
     if (!following) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
-
-    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       items(state.lines, key = { it.id }) { line ->
         val active = state.lines.getOrNull(state.activeLineIndex)?.id == line.id
         Column(Modifier.fillMaxWidth().background(
-          if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface,
+          if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
           RoundedCornerShape(12.dp),
         ).combinedClickable(
           onClick = { if (line.isTimed) { onSeekToLine(line); following = true } },
@@ -143,24 +122,53 @@ fun LyricsView(
           if (active) TextButton(onClick = { repository.calibrate(line) }) { Text("Sync here") }
         }
       }
-      if (state.lines.isEmpty() && state.phase == ReadAlongPhase.EMPTY) item { Text("Find an edition above or import your EPUB, TXT, LRC or SRT file.") }
     }
   }
 
+  if (showSearch) AlertDialog(
+    onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
+    text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
+      OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      TextButton(onClick = { pendingEdition = null; repository.searchBooks(query) }) { Text("Search") }
+      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
+      LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+        items(state.editions, key = { it.url }) { edition ->
+          BookEditionRow(edition, onSelect = { pendingEdition = edition; repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
+        }
+      }
+    } }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Done") } },
+  )
   if (showTracks) AlertDialog(
     onDismissRequest = { showTracks = false }, title = { Text("Attach text to audio tracks") },
     text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(audioFiles, key = { it.index }) { file ->
-      Row { Checkbox(file.index in selectedTracks, onCheckedChange = { checked ->
-        selectedTracks = if (checked) selectedTracks + file.index else selectedTracks - file.index
-      }, enabled = file.index != state.track?.fileIndex); Text(file.displayTitle, Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall) }
-    } } },
-    confirmButton = { TextButton(onClick = { repository.updateTrackSelection(selectedTracks); showTracks = false }) { Text("Save") } },
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(file.index in selectedTracks, onCheckedChange = { checked -> selectedTracks = if (checked) selectedTracks + file.index else selectedTracks - file.index }, enabled = file.index != state.track?.fileIndex)
+        Text(file.displayTitle, style = MaterialTheme.typography.bodySmall)
+      }
+    } } }, confirmButton = { TextButton(onClick = { repository.updateTrackSelection(selectedTracks); showTracks = false }) { Text("Save") } },
   )
-  if (showChapters) AlertDialog(
+  if (showChapters && state.canChooseChapter) AlertDialog(
     onDismissRequest = { showChapters = false }, title = { Text("Choose a chapter hint") },
     text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(state.chapters, key = { it.index }) { chapter ->
       TextButton(onClick = { repository.chooseChapter(chapter); showChapters = false; following = false }, modifier = Modifier.fillMaxWidth()) { Text(chapter.title) }
     } } }, confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
+  )
+  if (showAdjustment) AlertDialog(
+    onDismissRequest = { showAdjustment = false }, title = { Text("Synchronization") },
+    text = { Column {
+      Text("Correction: ${state.offsetMs / 1000.0}s")
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        TextButton(onClick = { repository.adjustOffset(-500) }) { Text("−0.5s") }
+        TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
+      }
+      if (state.canEstimate) {
+        Text("Narration matching is unavailable for this passage. Estimated timing uses reading pace and may drift. Its adjustments are temporary.", style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { repository.useEstimatedTiming(); showAdjustment = false }) { Text("Use estimated timing") }
+      }
+      if (state.source == TextSyncSource.EPUB_PACED) TextButton(onClick = { repository.useNarrationTiming(); showAdjustment = false }) { Text("Return to narration matching") }
+      state.isbn?.let { Text("ISBN $it · checksum valid. This validates the ISBN, not the narration match.", style = MaterialTheme.typography.bodySmall) }
+      Text("${state.matchedSentences} sentences timed · ${state.source?.displayName ?: "No text"}", style = MaterialTheme.typography.bodySmall)
+    } }, confirmButton = { TextButton(onClick = { showAdjustment = false }) { Text("Done") } },
   )
   state.accessUrl?.let { url ->
     ZLibraryAccessDialog(url, onDismiss = { repository.dismissAccess() }, onReady = { html, loadedUrl ->
@@ -168,5 +176,41 @@ fun LyricsView(
       val edition = pendingEdition
       if (edition == null) repository.acceptRenderedSearch(html, loadedUrl) else repository.downloadEdition(edition, selectedTracks, html)
     })
+  }
+}
+
+/** One status area for both acquisition and synchronization, including operation-specific recovery. */
+@Composable
+fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> Unit, onDownloadModel: () -> Unit) {
+  Column(Modifier.fillMaxWidth()) {
+    state.progressLabel?.let { label ->
+      LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("readalong-progress"))
+      Text(label, style = MaterialTheme.typography.bodySmall)
+    }
+    if (state.progressLabel == null) listOfNotNull(state.lookupMessage, state.message).distinct().forEach {
+      Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
+    }
+    state.recoveryLabel?.let { label ->
+      TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
+    }
+    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
+  }
+}
+
+@Composable
+fun BookEditionRow(edition: BookEdition, onSelect: () -> Unit, enabled: Boolean = true, imageLoader: ImageLoader? = null) {
+  OutlinedCard(onClick = onSelect, enabled = enabled, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("edition-row")) {
+    Row(Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+      val placeholder: @Composable () -> Unit = { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.MenuBook, "Cover unavailable", tint = MaterialTheme.colorScheme.onSurfaceVariant) } }
+      SubcomposeAsyncImage(model = edition.coverUrl, imageLoader = imageLoader ?: LocalContext.current.imageLoader,
+        contentDescription = "Cover of ${edition.title}", contentScale = ContentScale.Fit,
+        loading = { placeholder() }, error = { placeholder() },
+        modifier = Modifier.size(width = 56.dp, height = 84.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp)).testTag("edition-cover"))
+      Column(Modifier.weight(1f)) {
+        Text(edition.title, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Text(listOf(edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        edition.isbn?.let { Text("ISBN $it", style = MaterialTheme.typography.labelSmall) }
+      }
+    }
   }
 }
