@@ -23,7 +23,7 @@ class ReadAlongRepository(
   private val context: Context,
   private val store: ReadAlongStore,
   private val decoder: AudioWindowDecoder,
-  private val speech: WhisperEngine = WhisperEngine(),
+  private val speech: SpeechRecognizer = WhisperEngine(),
   private val models: SpeechModelManager = SpeechModelManager(context),
   private val library: BookCatalog = ZLibraryClient { url -> android.webkit.CookieManager.getInstance().getCookie(url) },
 ) {
@@ -51,14 +51,22 @@ class ReadAlongRepository(
   private var durationMs = 0L
   private var visible = false
   private var estimated = false
+  private var chapterHint: Int? = null
+  private var correctionJob: Job? = null
+  private var retiredAnalysis: Job? = null
+  private var correctionSequence = 0L
+  private var pendingReference: SyncReference? = null
+  private data class UndoCorrection(val target: SyncTarget, val offset: Long, val chapter: Int?, val sentenceHint: Int?)
+  private var undoCorrection: UndoCorrection? = null
 
   fun activate(track: ReadAlongTrack) {
     if (mutable.value.track == track) return
+    invalidateCorrection()
     generation++
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel()
     source = null; sentences = emptyList(); matcher = null; timings.clear(); estimated = false
     searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; recoveryAction = null
-    positionMs = 0; durationMs = 0; selectedHint = null; exhaustedBase = null
+    positionMs = 0; durationMs = 0; selectedHint = null; chapterHint = null; exhaustedBase = null
     mutable.value = ReadAlongState(track = track, phase = ReadAlongPhase.LOADING)
     load(track, generation)
   }
@@ -82,6 +90,7 @@ class ReadAlongRepository(
         val indices = withContext(Dispatchers.IO) { store.associatedTracks(book.id) }
         if (!current(track, version)) return@launch
         source = book; sentences = loaded; matcher = loadedMatcher
+        chapterHint = saved.third
         selectedHint = saved.third?.let { hint -> loaded.indexOfFirst { it.chapterIndex == hint }.takeIf { it >= 0 } }
         timings = existing.associateByTo(LinkedHashMap()) { it.id }
         if (book.source == TextSyncSource.LRC || book.source == TextSyncSource.SRT) {
@@ -217,6 +226,7 @@ class ReadAlongRepository(
   }
 
   private fun startImport(track: ReadAlongTrack, selectedTracks: Set<Int>, read: () -> Triple<ByteArray, String, String?>) {
+    invalidateCorrection()
     generation++
     val version = generation
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
@@ -274,6 +284,7 @@ class ReadAlongRepository(
         mutable.update { it.copy(modelProgress = 0, message = "Downloading the English speech model…") }
         models.download { progress -> mutable.update { it.copy(modelProgress = progress) } }
         mutable.update { it.copy(modelProgress = null, phase = if (it.phase == ReadAlongPhase.NEEDS_MODEL) ReadAlongPhase.READY else it.phase, message = it.message?.takeUnless { text -> text.startsWith("Downloading the English") }) }
+        if (mutable.value.correction.needsModel) mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.SELECTING, needsModel = false, message = "Model ready. Press Sync now when this sentence begins.")) }
         scheduleAnalysis()
       } catch (error: Exception) {
         if (error is CancellationException) throw error
@@ -290,7 +301,7 @@ class ReadAlongRepository(
   private fun scheduleAnalysis() {
     val book = source ?: return
     val track = mutable.value.track ?: return
-    if (!visible || estimated || book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
+    if (!visible || estimated || mutable.value.correction.isEditing || correctionJob?.isActive == true || book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
     if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
     val requestedBase = ((positionMs - 5_000).coerceAtLeast(0) / 20_000) * 20_000
     if (exhaustedBase == requestedBase) return
@@ -314,12 +325,14 @@ class ReadAlongRepository(
           val words = speech.transcribe(models.file, pcm).map { it.copy(startMs = it.startMs + start, endMs = it.endMs + start) }
           val activeMatcher = matcher
           val hint = selectedHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
-          val lines = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
+          val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
           if (!current(track, version)) return@launch
+          // Base timestamps stay stable across overlapping recognition windows and manual corrections.
+          val lines = matched.filter { it.id !in timings }
           withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines) }
           if (!current(track, version)) return@launch
           lines.forEach { timings[it.id] = it }
-          mutable.update { it.copy(alignmentAttempted = true, analysisMillis = android.os.SystemClock.elapsedRealtime() - began, message = if (lines.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else null) }
+          mutable.update { it.copy(alignmentAttempted = true, analysisMillis = android.os.SystemClock.elapsedRealtime() - began, message = if (matched.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else null) }
           publishLines()
           delay(100)
         }
@@ -338,8 +351,11 @@ class ReadAlongRepository(
     }
   }
 
-  fun adjustOffset(deltaMs: Long) = saveOffset(mutable.value.offsetMs + deltaMs)
-  fun calibrate(line: TimedLine) { if (line.isTimed) saveOffset(ReadAlongTimeline.calibration(line, positionMs)) }
+  fun adjustOffset(deltaMs: Long) {
+    invalidateCorrection()
+    saveOffset(mutable.value.offsetMs + deltaMs)
+    scheduleAnalysis()
+  }
   private fun saveOffset(value: Long) {
     val track = mutable.value.track ?: return
     val bookId = mutable.value.bookId ?: return
@@ -351,6 +367,7 @@ class ReadAlongRepository(
 
   fun chooseChapter(chapter: EpubChapter) {
     if (!mutable.value.canChooseChapter || mutable.value.phase == ReadAlongPhase.LOADING) return
+    invalidateCorrection()
     val track = mutable.value.track ?: return
     val book = source ?: return
     generation++
@@ -365,6 +382,7 @@ class ReadAlongRepository(
         withContext(Dispatchers.IO) { store.setChapterHint(track, chapter.index); store.resetAlignment(track, book.id) }
         if (current(track, version)) {
           selectedHint = index.takeIf { it >= 0 }
+          chapterHint = chapter.index
           timings.clear(); publishLines(); scheduleAnalysis()
         }
       } catch (error: Exception) { fail(error, track, version) }
@@ -374,6 +392,7 @@ class ReadAlongRepository(
 
   fun useEstimatedTiming() {
     if (!mutable.value.canEstimate) return
+    invalidateCorrection()
     val book = source ?: return
     if (durationMs <= 0) { mutable.update { it.copy(message = "Wait until the audio duration is known.") }; return }
     analysisJob?.cancel(); analysisJob = null; estimated = true
@@ -382,17 +401,176 @@ class ReadAlongRepository(
     val paced = PacedTimingEngine.paceText(text, durationMs)
     sentences = paced.map { BookSentence(it.id, 1, book.book.title, it.text) }
     timings = paced.associateByTo(LinkedHashMap()) { it.id }
-    mutable.update { it.copy(source = TextSyncSource.EPUB_PACED, phase = ReadAlongPhase.READY, message = "Estimated timing — use Sync here to correct drift.") }
+    mutable.update { it.copy(source = TextSyncSource.EPUB_PACED, phase = ReadAlongPhase.READY, message = "Estimated timing — use Correct sync to correct drift.") }
     publishLines()
   }
 
   fun useNarrationTiming() {
     if (!estimated) return
+    invalidateCorrection()
     estimated = false
     val track = mutable.value.track ?: return
     generation++; analysisJob?.cancel()
     mutable.update { it.copy(phase = ReadAlongPhase.LOADING, message = "Restoring narration timing…") }
     load(track, generation)
+  }
+
+  fun beginCorrection(sentenceId: Long? = null) {
+    if (mutable.value.bookId == null || mutable.value.phase == ReadAlongPhase.LOADING) return
+    stopCorrectionWork()
+    retiredAnalysis = analysisJob ?: retiredAnalysis
+    analysisJob?.cancel(); analysisJob = null
+    mutable.update { it.copy(
+      phase = if (it.phase == ReadAlongPhase.PREPARING) ReadAlongPhase.READY else it.phase,
+      correction = SyncCorrectionState(SyncCorrectionPhase.SELECTING, sentenceId?.let(it::syncTarget), event = correctionSequence),
+    ) }
+  }
+
+  fun selectCorrectionSentence(sentenceId: Long) {
+    if (!mutable.value.correction.isEditing) return
+    val target = mutable.value.syncTarget(sentenceId) ?: return
+    stopCorrectionWork()
+    mutable.update { it.copy(correction = SyncCorrectionState(SyncCorrectionPhase.SELECTING, target, event = correctionSequence)) }
+  }
+
+  fun cancelCorrection() {
+    stopCorrectionWork()
+    mutable.update { it.copy(correction = SyncCorrectionState(event = correctionSequence)) }
+    scheduleAnalysis()
+  }
+
+  /** Called for an actual player seek, never for ordinary playback progression or speed changes. */
+  fun playbackDiscontinuity() {
+    if (pendingReference == null && correctionJob?.isActive != true) return
+    val target = mutable.value.correction.target
+    stopCorrectionWork()
+    mutable.update { it.copy(correction = SyncCorrectionState(SyncCorrectionPhase.SELECTING, target,
+      "Audio position changed. Press Sync now when the sentence begins.", event = correctionSequence)) }
+  }
+
+  fun correctionUnavailable(message: String) {
+    if (!mutable.value.correction.isEditing) return
+    mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.ERROR, message = message, canRetry = false)) }
+  }
+
+  fun syncNow(reference: SyncReference) {
+    if (!mutable.value.accepts(reference.target) || mutable.value.correction.target != reference.target || !mutable.value.correction.isEditing || correctionJob?.isActive == true) return
+    if (reference.durationMs <= 0 || reference.positionMs !in 0 until reference.durationMs) {
+      correctionUnavailable("Start or prepare the audio before correcting sync."); return
+    }
+    positionMs = reference.positionMs; durationMs = reference.durationMs
+    pendingReference = reference
+    runCorrection(reference)
+  }
+
+  fun retryCorrection() {
+    val reference = pendingReference ?: return
+    if (mutable.value.correction.canRetry && mutable.value.accepts(reference.target) && correctionJob?.isActive != true) runCorrection(reference)
+  }
+
+  private fun runCorrection(reference: SyncReference) {
+    val target = reference.target
+    val version = generation
+    val request = ++correctionSequence
+    val oldAnalysis = analysisJob ?: retiredAnalysis
+    analysisJob?.cancel(); analysisJob = null
+    mutable.update { it.copy(correction = SyncCorrectionState(SyncCorrectionPhase.MATCHING, target, event = request)) }
+    correctionJob = scope.launch {
+      fun valid() = current(target.track, version) && request == correctionSequence && mutable.value.accepts(target)
+      try {
+        oldAnalysis?.join(); offsetJob?.join()
+        if (!valid()) return@launch
+        var line = mutable.value.lines.first { it.id == target.sentenceId }
+        val index = sentences.indexOfFirst { it.id == target.sentenceId }
+        if (!line.isTimed) {
+          check(target.source == TextSyncSource.NARRATION && index >= 0) { "This sentence has no usable timing. Choose another sentence." }
+          if (!models.isInstalled()) {
+            pendingReference = null
+            mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.ERROR, needsModel = true,
+              message = "Download the speech model, then press Sync now again when this sentence begins.")) }
+            return@launch
+          }
+          val start = reference.windowStartMs
+          val pcm = decoder.decode(target.track, start, reference.windowDurationMs)
+          val words = speech.transcribe(models.file, pcm).map { it.copy(startMs = it.startMs + start, endMs = it.endMs + start) }
+          val activeMatcher = matcher
+          val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, index) ?: emptyList() }
+          if (!valid()) return@launch
+          val selected = matched.firstOrNull { it.id == target.sentenceId }
+            ?: error("Could not confidently match this sentence. Try a longer sentence or check the ebook edition.")
+          val additions = matched.filter { it.id !in timings }
+          withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(target.track, target.bookId, start, start + reference.windowDurationMs, additions) }
+          if (!valid()) return@launch
+          additions.forEach { timings[it.id] = it }
+          line = selected
+        }
+        if (!valid()) return@launch
+        undoCorrection = UndoCorrection(target, mutable.value.offsetMs, chapterHint, selectedHint)
+        if (target.source == TextSyncSource.NARRATION && index >= 0) {
+          selectedHint = index; chapterHint = sentences[index].chapterIndex
+        }
+        val value = ReadAlongTimeline.calibration(line, reference.positionMs)
+        val lines = sentences.map { timings[it.id] ?: TimedLine(it.id, -1, -1, it.text) }
+        val recoveredMatching = mutable.value.recoveryLabel in setOf("Retry matching", "Retry model download")
+        if (recoveredMatching) recoveryAction = null
+        // Playback may have advanced during matching; align this historical reference without seeking.
+        mutable.update { it.copy(offsetMs = value, lines = lines, matchedSentences = lines.count { item -> item.isTimed },
+          activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, value), message = null,
+          phase = if (recoveredMatching) ReadAlongPhase.READY else it.phase,
+          recovery = if (recoveredMatching) null else it.recovery, recoveryLabel = if (recoveredMatching) null else it.recoveryLabel,
+          correction = SyncCorrectionState(SyncCorrectionPhase.APPLIED, target, "Text aligned.", event = request), canUndoCorrection = true) }
+        persistCorrection(target, value, chapterHint)
+        pendingReference = null; exhaustedBase = null
+      } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        if (valid()) mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.ERROR,
+          message = error.message ?: "Could not correct sync. Retry this passage.", canRetry = true)) }
+      } finally {
+        if (request == correctionSequence) { correctionJob = null; retiredAnalysis = null; scheduleAnalysis() }
+      }
+    }
+  }
+
+  fun undoSyncCorrection() {
+    val previous = undoCorrection ?: return
+    if (!mutable.value.accepts(previous.target)) return
+    stopCorrectionWork()
+    selectedHint = previous.sentenceHint; chapterHint = previous.chapter
+    undoCorrection = null
+    mutable.update { it.copy(offsetMs = previous.offset, canUndoCorrection = false, correction = SyncCorrectionState(event = correctionSequence)) }
+    publishLines(); persistCorrection(previous.target, previous.offset, previous.chapter)
+  }
+
+  fun resetSyncCorrection() {
+    val target = mutable.value.lines.firstOrNull()?.let { mutable.value.syncTarget(it.id) } ?: return
+    invalidateCorrection()
+    mutable.update { it.copy(offsetMs = 0) }; publishLines()
+    persistCorrection(target, 0, chapterHint)
+    scheduleAnalysis()
+  }
+
+  private fun persistCorrection(target: SyncTarget, value: Long, chapter: Int?) {
+    if (target.source == TextSyncSource.EPUB_PACED || estimated) return
+    val previous = offsetJob
+    offsetJob = scope.launch {
+      try {
+        previous?.join()
+        withContext(Dispatchers.IO) { store.setCorrection(target.track, target.bookId, value, chapter) }
+      } catch (error: Exception) {
+        if (error is CancellationException) throw error
+        if (mutable.value.accepts(target)) mutable.update { it.copy(message = "Could not save sync correction. Try correcting again.") }
+      }
+    }
+  }
+
+  private fun stopCorrectionWork() {
+    correctionSequence++
+    correctionJob?.cancel(); correctionJob = null; pendingReference = null
+  }
+
+  private fun invalidateCorrection() {
+    stopCorrectionWork(); undoCorrection = null
+    mutable.update { it.copy(correction = SyncCorrectionState(event = correctionSequence), canUndoCorrection = false) }
   }
 
   private fun publishLines() {

@@ -49,7 +49,8 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
     onSpeed = { showSpeedDialog = true }, onBoost = { container.playback.toggleVoiceBoost() }, modifier = modifier,
   ) { readerModifier ->
     LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
-      cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier)
+      cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier,
+      onSyncNow = { container.playback.syncReadAlongNow(it) })
   }
   if (showSpeedDialog) AlertDialog(
     onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },

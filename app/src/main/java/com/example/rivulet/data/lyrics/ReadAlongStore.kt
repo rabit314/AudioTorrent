@@ -84,6 +84,12 @@ class ReadAlongStore(private val database: TorrentDatabase) {
   }
 
   fun chapterHint(track: ReadAlongTrack): Int? = database.readableDatabase.query("readalong_tracks", arrayOf("chapter_hint"), "info_hash=? AND file_index=?", arrayOf(track.infoHash, track.fileIndex.toString()), null, null, null).use { if (it.moveToFirst() && !it.isNull(0)) it.getInt(0) else null }
+  fun setCorrection(track: ReadAlongTrack, bookId: String, offsetMs: Long, chapterHint: Int?) {
+    database.writableDatabase.update("readalong_tracks", ContentValues().apply {
+      put("offset_ms", offsetMs)
+      if (chapterHint == null) putNull("chapter_hint") else put("chapter_hint", chapterHint)
+    }, "info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, track.fileIndex.toString(), bookId))
+  }
   fun setChapterHint(track: ReadAlongTrack, chapter: Int) { database.writableDatabase.update("readalong_tracks", ContentValues().apply { put("chapter_hint", chapter) }, "info_hash=? AND file_index=?", arrayOf(track.infoHash, track.fileIndex.toString())) }
 
   fun timings(track: ReadAlongTrack, bookId: String): List<TimedLine> = database.readableDatabase.query("readalong_timings", null, "info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, track.fileIndex.toString(), bookId), null, null, "start_ms").use { c ->

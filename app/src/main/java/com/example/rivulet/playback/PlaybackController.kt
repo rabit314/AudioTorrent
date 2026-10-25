@@ -18,6 +18,7 @@ import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.BookmarkEntry
 import com.example.rivulet.data.TorrentDatabase
 import com.example.rivulet.data.lyrics.AudioBookAligner
+import com.example.rivulet.data.lyrics.accepts
 import com.example.rivulet.data.lyrics.EpubChapter
 import com.example.rivulet.data.lyrics.EpubExtractor
 import com.example.rivulet.data.lyrics.LrcParser
@@ -29,6 +30,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -195,6 +197,10 @@ class PlaybackController(
           Log.e(TAG, "Playback failed: ${error.errorCodeName}", error)
           lastError = describePlaybackError(error)
           publish()
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+          if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) readAlong.playbackDiscontinuity()
         }
       }
     )
@@ -530,6 +536,7 @@ class PlaybackController(
   }
 
   fun seekTo(positionMs: Long) {
+    readAlong.playbackDiscontinuity()
     val duration = player.duration
     val max = if (duration > 0 && duration != C.TIME_UNSET) duration else positionMs
     player.seekTo(positionMs.coerceIn(0L, max))
@@ -537,6 +544,7 @@ class PlaybackController(
   }
 
   fun seekBy(offsetMs: Long) {
+    readAlong.playbackDiscontinuity()
     val cur = player.currentPosition
     val duration = player.duration
     val max = if (duration > 0 && duration != C.TIME_UNSET) duration else Long.MAX_VALUE
@@ -671,6 +679,25 @@ class PlaybackController(
 
   fun seekToLine(line: TimedLine) {
     if (line.isTimed) seekTo(com.example.rivulet.data.lyrics.ReadAlongTimeline.seekPosition(line, readAlong.state.value.offsetMs))
+  }
+
+  fun syncReadAlongNow(target: com.example.rivulet.data.lyrics.SyncTarget) {
+    if (!readAlong.state.value.accepts(target)) return
+    val duration = player.duration
+    if (player.currentMediaItem == null || player.playbackState == Player.STATE_IDLE ||
+      currentInfoHash != target.track.infoHash || currentFileIndex != target.track.fileIndex || duration <= 0 || duration == C.TIME_UNSET) {
+      readAlong.correctionUnavailable("Start or prepare the audio before correcting sync.")
+      return
+    }
+    readAlong.syncNow(com.example.rivulet.data.lyrics.SyncReference(target, player.currentPosition.coerceAtLeast(0), duration))
+  }
+
+  /** Releases an owned controller; app-scoped instances live for the application's lifetime. */
+  internal fun close() {
+    scope.cancel()
+    readAlong.close()
+    loudnessEnhancer?.release()
+    player.release()
   }
 
   private fun describePlaybackError(error: PlaybackException): String {

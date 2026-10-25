@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
@@ -40,11 +41,14 @@ fun LyricsView(
   cleanBookTitle: String,
   onSeekToLine: (TimedLine) -> Unit,
   modifier: Modifier = Modifier,
+  onSyncNow: (SyncTarget) -> Unit = { repository.correctionUnavailable("Start or prepare the audio before correcting sync.") },
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
   val list = key(state.track) { rememberLazyListState() }
   val dragged by list.interactionSource.collectIsDraggedAsState()
-  var following by rememberSaveable(state.track) { mutableStateOf(true) }
+  var following by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
+  var followingBeforeCorrection by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
+  var handledCorrectionEvent by rememberSaveable(state.track, state.bookId, state.source) { mutableLongStateOf(-1L) }
   var query by rememberSaveable(state.track) { mutableStateOf(cleanBookTitle) }
   var showSearch by rememberSaveable(state.track) { mutableStateOf(false) }
   var showOptions by remember { mutableStateOf(false) }
@@ -68,6 +72,11 @@ fun LyricsView(
     picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
   }
   val findText = { pendingEdition = null; showSearch = true; repository.searchBooks(query) }
+  val beginCorrection: (Long?) -> Unit = { sentenceId ->
+    if (!state.correction.isEditing) followingBeforeCorrection = following
+    following = false
+    repository.beginCorrection(sentenceId)
+  }
   DisposableEffect(repository) {
     repository.setVisible(true)
     onDispose { repository.setVisible(false) }
@@ -77,13 +86,20 @@ fun LyricsView(
   }
   LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
   LaunchedEffect(dragged) { if (dragged) following = false }
+  LaunchedEffect(state.correction.phase, state.correction.event) {
+    if (state.correction.phase == SyncCorrectionPhase.APPLIED && handledCorrectionEvent != state.correction.event) {
+      following = true
+      handledCorrectionEvent = state.correction.event
+    }
+  }
   LaunchedEffect(state.track, state.activeLineIndex, following) {
-    if (following && state.activeLineIndex in state.lines.indices) list.animateScrollToItem((state.activeLineIndex - 2).coerceAtLeast(0))
+    if (following && !state.correction.isEditing && state.activeLineIndex in state.lines.indices) list.animateScrollToItem((state.activeLineIndex - 2).coerceAtLeast(0))
   }
 
   Column(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-      Text(if (state.source == TextSyncSource.EPUB_PACED) "Estimated timing" else "Read along", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+      if (state.correction.isEditing) Text("Correct sync", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 12.dp))
+      if (state.bookId != null && !state.correction.isEditing) TextButton(onClick = { beginCorrection(null) }, modifier = Modifier.testTag("correct-sync")) { Text("Correct sync") }
       Box {
         TextButton(onClick = { showOptions = true }) { Text("Text options") }
         DropdownMenu(showOptions, onDismissRequest = { showOptions = false }) {
@@ -98,6 +114,23 @@ fun LyricsView(
       }
     }
     if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
+    if (state.correction.isEditing) {
+      val correction = state.correction
+      Text(correction.message ?: "Select a sentence. Press Sync now when it begins.", style = MaterialTheme.typography.bodySmall)
+      correction.target?.let { target -> state.lines.firstOrNull { it.id == target.sentenceId }?.let { line ->
+        Text("Selected: ${line.text}", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      } }
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (correction.needsModel) TextButton(onClick = repository::downloadModel, enabled = state.modelProgress == null) { Text("Download speech model") }
+        else FilledTonalButton(onClick = { correction.target?.let(onSyncNow) },
+          enabled = correction.target != null && correction.phase != SyncCorrectionPhase.MATCHING, modifier = Modifier.testTag("sync-now")) { Text("Sync now") }
+        if (correction.canRetry) TextButton(onClick = repository::retryCorrection) { Text("Retry matching") }
+        TextButton(onClick = { repository.cancelCorrection(); following = followingBeforeCorrection }) { Text("Cancel") }
+      }
+    } else if (state.canUndoCorrection) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+      Text("Text aligned", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+      TextButton(onClick = repository::undoSyncCorrection) { Text("Undo correction") }
+    }
     if (state.bookId == null && state.phase != ReadAlongPhase.LOADING) {
       Text("Find your edition or import a book to read along.", style = MaterialTheme.typography.bodyMedium)
       FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -105,21 +138,21 @@ fun LyricsView(
         TextButton(onClick = importFile) { Text("Import file") }
       }
     }
-    if (!following) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
+    if (!following && !state.correction.isEditing) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
     LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
       items(state.lines, key = { it.id }) { line ->
         val active = state.lines.getOrNull(state.activeLineIndex)?.id == line.id
+        val selected = state.correction.isEditing && state.correction.target?.sentenceId == line.id
         Column(Modifier.fillMaxWidth().background(
           if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
           RoundedCornerShape(12.dp),
-        ).combinedClickable(
-          onClick = { if (line.isTimed) { onSeekToLine(line); following = true } },
-          onLongClick = { if (line.isTimed) repository.calibrate(line) },
+        ).then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)) else Modifier).combinedClickable(
+          onClick = { if (state.correction.isEditing) repository.selectCorrectionSentence(line.id) else if (line.isTimed) { onSeekToLine(line); following = true } },
+          onLongClick = { beginCorrection(line.id) },
         ).padding(12.dp)) {
-          Text(line.text, fontSize = if (active) 23.sp else 20.sp, lineHeight = 30.sp,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-            color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
-          if (active) TextButton(onClick = { repository.calibrate(line) }) { Text("Sync here") }
+          Text(line.text, fontSize = if (active || selected) 23.sp else 20.sp, lineHeight = 30.sp,
+            fontWeight = if (active || selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (active || selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
         }
       }
     }
@@ -161,6 +194,7 @@ fun LyricsView(
         TextButton(onClick = { repository.adjustOffset(-500) }) { Text("−0.5s") }
         TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
       }
+      TextButton(onClick = repository::resetSyncCorrection) { Text("Reset correction") }
       if (state.canEstimate) {
         Text("Narration matching is unavailable for this passage. Estimated timing uses reading pace and may drift. Its adjustments are temporary.", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { repository.useEstimatedTiming(); showAdjustment = false }) { Text("Use estimated timing") }
@@ -187,13 +221,13 @@ fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> 
       LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("readalong-progress"))
       Text(label, style = MaterialTheme.typography.bodySmall)
     }
-    if (state.progressLabel == null) listOfNotNull(state.lookupMessage, state.message).distinct().forEach {
+    if (state.progressLabel == null) listOfNotNull(state.lookupMessage, state.message.takeUnless { state.correction.isEditing }).distinct().forEach {
       Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 4.dp))
     }
     state.recoveryLabel?.let { label ->
       TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
     }
-    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
+    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
   }
 }
 

@@ -51,6 +51,8 @@ Get the latest installable pre-release APK directly for your Android phone or ta
 - 📑 **Natural Chapter Queuing** — Multi-file audiobooks sort naturally (`Chapter 1`, `Chapter 2`, ..., `Chapter 10`), with seamless auto-advance across tracks, unified chapter drawer, and persistent bookmarks with personal notes.
 - 📚 **Audiobook Discovery** — Built-in AudiobookBay integration with trending feeds, audio-only media filtering, search history, and instant magnet resolution.
 - 📖 **Companion Read-Along (Beta)** — Find an ebook through native Z-Library results with cover thumbnails, or import EPUB, TXT, LRC, and SRT files. English narration matching runs on the phone with a separately downloaded 60 MB model. Text options contains edition replacement, track selection, chapter hints, and sync adjustments. Includes sentence highlighting, tap-to-seek, and Follow narration; temporary estimated timing is offered only when matching is unavailable.
+
+To correct highlighting without moving the audio, open **Text → Correct sync**, select the sentence being narrated, and press **Sync now** when it begins. Untimed sentences guide a local narration match. **Undo correction** restores the previous adjustment; normal sentence taps still seek outside correction mode.
 - 💾 **Offline Library Management** — Download individual chapters or entire audio torrents to local storage with automated offline persistence.
 - 🔔 **Media3 Foreground Service** — Complete background audio playback with lock screen album art, interactive notification with live Play/Pause toggles, and Bluetooth headset controls.
 

@@ -10,7 +10,11 @@ import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class WhisperEngine {
+fun interface SpeechRecognizer {
+  suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord>
+}
+
+class WhisperEngine : SpeechRecognizer {
   private val mutex = Mutex()
   private val worker = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ReadAlongSpeech").apply { isDaemon = true } }
   private external fun nativeCreate(path: String): Long
@@ -18,7 +22,7 @@ class WhisperEngine {
   private external fun nativeCancel(handle: Long)
   private external fun nativeDestroy(handle: Long)
 
-  suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord> = mutex.withLock {
+  override suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord> = mutex.withLock {
     withContext(Dispatchers.Default) {
       suspendCancellableCoroutine { continuation ->
         // Pointer lifetime and cancellation are serialized, including cancellation during loading.

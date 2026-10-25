@@ -35,6 +35,8 @@ data class ReadAlongState(
   val recoveryLabel: String? = null,
   val recovery: ReadAlongRecovery? = null,
   val alignmentAttempted: Boolean = false,
+  val correction: SyncCorrectionState = SyncCorrectionState(),
+  val canUndoCorrection: Boolean = false,
 ) {
   val canEstimate: Boolean get() = bookId != null && source == TextSyncSource.NARRATION && matchedSentences == 0 &&
     (phase == ReadAlongPhase.NEEDS_MODEL ||
@@ -44,6 +46,7 @@ data class ReadAlongState(
   val progressLabel: String? get() = when {
     modelProgress != null -> "Downloading speech model… $modelProgress%"
     searching -> lookupMessage?.takeIf { it.startsWith("Downloading ") } ?: "Searching for book text…"
+    correction.phase == SyncCorrectionPhase.MATCHING -> "Matching the selected sentence… Audio can keep playing."
     phase == ReadAlongPhase.LOADING -> "Loading book text…"
     phase == ReadAlongPhase.PREPARING -> "Preparing read-along…"
     else -> null
