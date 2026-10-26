@@ -451,7 +451,7 @@ fun AudioBookBayScreen(
                   loadingItemId = book.detailUrl
                   container.audiobookbay.getDetailAndMagnet(book)
                     .onSuccess { detail ->
-                      container.engine.addMagnet(detail.magnetUri, detail.coverUrl)
+                      container.engine.addMagnet(detail.magnetUri, detail.coverUrl, detail.title)
                         .onSuccess { infoHash ->
                           loadingItemId = null
                           onOpenTorrent(infoHash)
@@ -539,7 +539,7 @@ fun AudioBookBayScreen(
         Button(
           onClick = {
             scope.launch {
-              container.engine.addMagnet(detail.magnetUri, detail.coverUrl)
+              container.engine.addMagnet(detail.magnetUri, detail.coverUrl, detail.title)
                 .onSuccess { hash ->
                   activeDetail = null
                   onOpenTorrent(hash)

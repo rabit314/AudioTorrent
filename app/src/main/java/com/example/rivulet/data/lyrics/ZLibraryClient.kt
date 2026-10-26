@@ -31,9 +31,7 @@ class ZLibraryClient(private val cookies: (String) -> String? = { null }) : Book
     require(query.isNotBlank()) { "Enter a book title." }
     val url = "$BASE/s/${URLEncoder.encode(query.trim(), "UTF-8").replace("+", "%20")}?extensions%5B%5D=epub"
     val html = page(url)
-    return parseResults(html, url).sortedByDescending { edition ->
-      ReadAlongText.tokens(query).toSet().intersect(ReadAlongText.tokens(edition.title).toSet()).size * 10 + if (edition.language.contains("english", true)) 2 else 0
-    }
+    return BookSearch.rank(parseResults(html, url), query)
   }
 
   override fun download(edition: BookEdition, renderedHtml: String?): Triple<ByteArray, String, String> {

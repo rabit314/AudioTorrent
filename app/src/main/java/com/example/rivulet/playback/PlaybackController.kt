@@ -29,6 +29,11 @@ import com.example.rivulet.data.lyrics.TimedLine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -125,7 +130,9 @@ class PlaybackController(
   val currentQueueIndex = MutableStateFlow<Int>(-1)
   val bookmarks = MutableStateFlow<List<BookmarkEntry>>(emptyList())
   var queueProvider: ((infoHash: String) -> List<QueueTrack>)? = null
-  var trackPreparer: (suspend (infoHash: String, fileIndex: Int) -> String)? = null
+  var trackPreparer: (suspend (infoHash: String, fileIndex: Int) -> PreparedPlayback)? = null
+  private var requestSequence = 0L
+  private var requestOwner: Job? = null
 
   private var sleepTimerJob: Job? = null
   private var sleepTimerRemainingSec: Int? = null
@@ -143,8 +150,8 @@ class PlaybackController(
   init {
     // Prime state with latest played audiobook from history
     scope.launch {
-      val latest = database.getLatestPlayedBook()
-      if (latest != null && player.mediaItemCount == 0) {
+      val latest = withContext(Dispatchers.IO) { database.getLatestPlayedBook() }
+      if (latest != null && player.mediaItemCount == 0 && currentInfoHash == null) {
         currentTitle = latest.bookTitle
         currentCoverUrl = latest.coverUrl
         currentInfoHash = latest.infoHash
@@ -209,6 +216,7 @@ class PlaybackController(
     scope.launch {
       var ticks = 0
       while (isActive) {
+        refreshRestoredMetadata()
         publish()
         readAlong.playback(player.currentPosition, player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L)
         delay(350)
@@ -232,8 +240,6 @@ class PlaybackController(
 
   fun jumpToQueueIndex(index: Int) {
     if (index < 0 || index >= queue.size) return
-    queueIndex = index
-    currentQueueIndex.value = index
     val track = queue[index]
     activePlaybackJob?.cancel()
     activePlaybackJob = scope.launch {
@@ -282,8 +288,6 @@ class PlaybackController(
   fun playNext() {
     if (!hasNext()) return
     val nextIdx = queueIndex + 1
-    queueIndex = nextIdx
-    currentQueueIndex.value = nextIdx
     val track = queue[nextIdx]
     activePlaybackJob?.cancel()
     activePlaybackJob = scope.launch {
@@ -298,8 +302,6 @@ class PlaybackController(
     }
     if (!hasPrevious()) return
     val prevIdx = queueIndex - 1
-    queueIndex = prevIdx
-    currentQueueIndex.value = prevIdx
     val track = queue[prevIdx]
     activePlaybackJob?.cancel()
     activePlaybackJob = scope.launch {
@@ -319,57 +321,58 @@ class PlaybackController(
     queueOverride: List<QueueTrack>? = null,
     autoplay: Boolean = true,
   ): Result<Unit> = withContext(Dispatchers.Main) {
+    val owner = currentCoroutineContext().job
+    requestOwner?.takeIf { it !== owner }?.cancel()
+    requestOwner = owner
+    val request = ++requestSequence
+    var prepared: PreparedPlayback? = null
+    var handedOff = false
     try {
-      lastError = null
-
-      // Resolve and synchronize queue
-      val tracks = when {
-        queueOverride != null -> queueOverride
-        queue.isNotEmpty() && queue.firstOrNull()?.infoHash == infoHash -> queue
-        else -> queueProvider?.invoke(infoHash) ?: emptyList()
-      }
-
+      val tracks = queueOverride ?: queueProvider?.invoke(infoHash)?.takeIf { it.isNotEmpty() }
+        ?: queue.takeIf { it.firstOrNull()?.infoHash == infoHash }.orEmpty()
       val targetIdx = tracks.indexOfFirst { it.infoHash == infoHash && it.fileIndex == fileIndex }
-      if (tracks.isNotEmpty()) {
-        queue = tracks
-        queueIndex = if (targetIdx >= 0) targetIdx else 0
-        currentQueue.value = tracks
-        currentQueueIndex.value = queueIndex
-      } else if (targetIdx >= 0) {
-        queueIndex = targetIdx
-        currentQueueIndex.value = targetIdx
-      }
-
-      val trackTitle = tracks.getOrNull(targetIdx)?.title
-        ?: database.getTorrent(infoHash)?.name
-        ?: "Chapter ${fileIndex + 1}"
-      val bookTitle = tracks.getOrNull(targetIdx)?.subtitle
-        ?: database.getTorrent(infoHash)?.name
-        ?: "Audiobook"
-      val coverUrl = tracks.getOrNull(targetIdx)?.coverUrl
-        ?: database.getTorrent(infoHash)?.coverUrl
-
-      // Prepare stream
+      val saved = withContext(Dispatchers.IO) { database.getTorrent(infoHash) }
+      val track = tracks.getOrNull(targetIdx)
+      val trackTitle = track?.title ?: saved?.name ?: "Chapter ${fileIndex + 1}"
+      val bookTitle = track?.subtitle ?: saved?.name ?: "Audiobook"
+      val coverUrl = track?.coverUrl ?: saved?.coverUrl
       val preparer = trackPreparer ?: error("Playback stream preparer is not configured.")
-      val streamUrl = preparer(infoHash, fileIndex)
-
-      play(
-        url = streamUrl,
-        title = trackTitle,
-        subtitle = bookTitle,
-        infoHash = infoHash,
-        fileIndex = fileIndex,
-        coverUrl = coverUrl,
-        overridePositionMs = startPositionMs,
-        autoplay = autoplay,
-      )
-
+      prepared = preparer(infoHash, fileIndex)
+      currentCoroutineContext().ensureActive()
+      if (request != requestSequence) throw CancellationException("Superseded playback request")
+      if (tracks.isNotEmpty()) setQueue(tracks, targetIdx.coerceAtLeast(0))
+      // No suspension between accepting the preparation and handing it to ExoPlayer.
+      requestOwner = null
+      play(prepared.url, trackTitle, bookTitle, infoHash, fileIndex, coverUrl, startPositionMs, autoplay)
+      handedOff = true
       Result.success(Unit)
-    } catch (t: Throwable) {
-      Log.e(TAG, "requestPlayback failed for $infoHash / $fileIndex", t)
-      lastError = t.message ?: "Failed to start playback."
-      publish()
-      Result.failure(t)
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (error: Exception) {
+      if (request == requestSequence) {
+        Log.e(TAG, "requestPlayback failed for $infoHash / $fileIndex", error)
+        lastError = error.message ?: "Failed to start playback."
+        publish()
+      }
+      Result.failure(error)
+    } finally {
+      if (!handedOff) withContext(NonCancellable) { prepared?.abandon?.invoke() }
+      if (requestOwner === owner) requestOwner = null
+    }
+  }
+
+  private fun refreshRestoredMetadata() {
+    if (player.mediaItemCount != 0) return
+    val hash = currentInfoHash ?: return
+    val tracks = queueProvider?.invoke(hash).orEmpty()
+    val index = tracks.indexOfFirst { it.fileIndex == currentFileIndex }
+    val track = tracks.getOrNull(index) ?: return
+    if (currentTitle != track.title || currentSubtitle != track.subtitle || queue.isEmpty()) {
+      currentTitle = track.title
+      currentSubtitle = track.subtitle
+      currentCoverUrl = track.coverUrl ?: currentCoverUrl
+      queue = tracks; queueIndex = index
+      currentQueue.value = tracks; currentQueueIndex.value = index
     }
   }
 
@@ -383,6 +386,7 @@ class PlaybackController(
     overridePositionMs: Long? = null,
     autoplay: Boolean = true,
   ) {
+    if (requestOwner != null) { requestOwner?.cancel(); requestOwner = null; requestSequence++ }
     // Save previous position before switching
     saveCurrentPosition()
 
@@ -485,14 +489,9 @@ class PlaybackController(
         // Resume from primed history item if available
         val hash = currentInfoHash
         val index = currentFileIndex
-        val preparer = trackPreparer
-        if (hash != null && index >= 0 && preparer != null) {
-          scope.launch {
-            runCatching {
-              val url = preparer(hash, index)
-              play(url, currentTitle, currentSubtitle, hash, index, currentCoverUrl)
-            }
-          }
+        if (hash != null && index >= 0 && trackPreparer != null) {
+          activePlaybackJob?.cancel()
+          activePlaybackJob = scope.launch { requestPlayback(hash, index) }
         }
       }
       else -> {
@@ -636,6 +635,7 @@ class PlaybackController(
   }
 
   fun stop() {
+    requestOwner?.cancel(); requestOwner = null; requestSequence++
     saveCurrentPosition()
     player.stop()
     player.clearMediaItems()
@@ -694,6 +694,7 @@ class PlaybackController(
 
   /** Releases an owned controller; app-scoped instances live for the application's lifetime. */
   internal fun close() {
+    requestOwner?.cancel(); requestOwner = null; requestSequence++
     scope.cancel()
     readAlong.close()
     loudnessEnhancer?.release()

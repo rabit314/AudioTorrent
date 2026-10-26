@@ -421,7 +421,7 @@ fun LibraryScreen(
                       streamingItemId = book.detailUrl
                       container.audiobookbay.getDetailAndMagnet(book)
                         .onSuccess { detail ->
-                          container.engine.addMagnet(detail.magnetUri, detail.coverUrl)
+                          container.engine.addMagnet(detail.magnetUri, detail.coverUrl, detail.title)
                             .onSuccess { hash ->
                               streamingItemId = null
                               onOpenTorrent(hash)

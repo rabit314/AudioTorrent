@@ -246,9 +246,9 @@ class EpubAndAlignmentTest {
     val book3 = BookTitleCleaner.resolveCleanBookTitle("01 - Chapter 1.mp3", "Ray Bradbury - Fahrenheit 451")
     assertEquals("Fahrenheit 451", book3)
 
-    // Case 4: Track name containing author prefix
+    // Case 4: Without corroboration an ambiguous two-part name stays intact.
     val book4 = BookTitleCleaner.resolveCleanBookTitle("Aaron Dembski-Bowden - Void Stalker [Audiobook].mp3", "Warhammer")
-    assertEquals("Void Stalker", book4)
+    assertEquals("Aaron Dembski-Bowden - Void Stalker", book4)
 
     // Case 5: Path components stripped
     val book5 = BookTitleCleaner.resolveCleanBookTitle("Audiobooks/Night Lords/[01] Soul Hunter.m4b", "Night Lords")

@@ -43,6 +43,7 @@ class StreamSession(
 
   val isClosed: Boolean
     get() = closed.get()
+  val referenceCount: Int get() = refs.get()
 
   /** Called by the HTTP server for each connection that reuses this lease. */
   fun retain() {

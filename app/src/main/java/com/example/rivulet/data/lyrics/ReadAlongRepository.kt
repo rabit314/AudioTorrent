@@ -41,6 +41,9 @@ class ReadAlongRepository(
   private var searchKey: String? = null
   private var searchSucceeded = false
   private var searchResults: List<BookEdition> = emptyList()
+  private data class Lookup(val track: ReadAlongTrack, val version: Long, val request: Long,
+    val query: String, val title: String, val author: String, var titleOnly: Boolean = false)
+  private var lookup: Lookup? = null
   private var lookupSequence = 0L
   private var recoveryAction: (() -> Unit)? = null
   private var source: StoredReadAlongBook? = null
@@ -65,7 +68,7 @@ class ReadAlongRepository(
     generation++
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel()
     source = null; sentences = emptyList(); matcher = null; timings.clear(); estimated = false
-    searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; recoveryAction = null
+    searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; lookup = null; recoveryAction = null
     positionMs = 0; durationMs = 0; selectedHint = null; chapterHint = null; exhaustedBase = null
     mutable.value = ReadAlongState(track = track, phase = ReadAlongPhase.LOADING)
     load(track, generation)
@@ -142,12 +145,16 @@ class ReadAlongRepository(
     startImport(track, selectedTracks) { Triple(bytes, name, mime) }
   }
 
-  fun searchBooks(query: String, force: Boolean = false) {
+  fun searchBooks(query: String, force: Boolean = false, title: String = query, author: String = "") {
     val track = mutable.value.track ?: return
-    val normalized = query.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
-    if (normalized.isBlank()) { mutable.update { it.copy(lookupMessage = "Enter a book title.") }; return }
+    fun normalize(value: String) = value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
+    if (query.isBlank()) { mutable.update { it.copy(lookupMessage = "Enter a book title.") }; return }
+    val normalized = listOf(query, title, author).joinToString("\n") { normalize(it) }
     if (!force && searchKey == normalized && searchSucceeded) {
-      mutable.update { it.copy(editions = searchResults, lookupMessage = if (searchResults.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+      lookupJob?.cancel()
+      lookup = Lookup(track, generation, ++lookupSequence, query.trim(), title.trim(), author.trim())
+      clearRecovery()
+      mutable.update { it.copy(searching = false, accessUrl = null, editions = searchResults, lookupMessage = if (searchResults.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
       return
     }
     if (!force && searchKey == normalized && lookupJob?.isActive == true && mutable.value.searching) return
@@ -157,23 +164,41 @@ class ReadAlongRepository(
     lookupJob?.cancel()
     clearRecovery()
     mutable.update { it.copy(searching = true, editions = emptyList(), accessUrl = null, lookupMessage = null) }
-    lookupJob = scope.launch {
+    val search = Lookup(track, version, request, query.trim(), title.trim(), author.trim())
+    lookup = search
+    lookupJob = scope.launch { runLookup(search) }
+  }
+
+  private fun lookupCurrent(search: Lookup) = current(search.track, search.version) && search.request == lookupSequence
+
+  private suspend fun runLookup(search: Lookup) {
       try {
-        val results = withContext(Dispatchers.IO) { library.search(query) }
-        if (current(track, version) && request == lookupSequence) {
+        val results = withContext(Dispatchers.IO) { library.search(if (search.titleOnly) search.title else search.query) }
+        if (lookupCurrent(search)) {
+          if (shouldBroaden(search, results)) {
+            search.titleOnly = true
+            mutable.update { it.copy(lookupMessage = "Trying the book title without the author…") }
+            runLookup(search)
+            return
+          }
           searchSucceeded = true
-          searchResults = results
-          mutable.update { it.copy(searching = false, editions = results, lookupMessage = if (results.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+          searchResults = BookSearch.rank(results, search.query, search.title, search.author)
+          mutable.update { it.copy(searching = false, editions = searchResults, lookupMessage = if (results.isEmpty()) "No editions found. Try a different title or import your ebook." else if (search.titleOnly) "Results for ${search.title} (title only)." else null) }
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
-        if (current(track, version) && request == lookupSequence) {
+        if (lookupCurrent(search)) {
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error !is SiteAccessRequired) offerRecovery(track, version, "Retry search") { searchBooks(query, force = true) }
+          if (error !is SiteAccessRequired) offerRecovery(search.track, search.version, "Retry search") {
+            searchBooks(search.query, force = true, title = search.title, author = search.author)
+          }
         }
       }
-    }
   }
+
+  private fun shouldBroaden(search: Lookup, results: List<BookEdition>) = !search.titleOnly &&
+    search.author.isNotBlank() && !search.title.equals(search.query, true) &&
+    results.none { BookSearch.matchesTitle(it, search.title) }
 
   fun downloadEdition(edition: BookEdition, selectedTracks: Set<Int>, renderedHtml: String? = null) {
     val track = mutable.value.track ?: return
@@ -201,8 +226,18 @@ class ReadAlongRepository(
 
   fun dismissAccess() { mutable.update { it.copy(accessUrl = null) } }
 
-  fun acceptRenderedSearch(html: String, url: String) {
-    val editions = ZLibraryClient.parseResults(html, url)
+  fun acceptRenderedSearch(html: String, url: String, expectedTrack: ReadAlongTrack? = mutable.value.track) {
+    if (expectedTrack != mutable.value.track) return
+    val search = lookup ?: return
+    if (!lookupCurrent(search)) return
+    val parsed = ZLibraryClient.parseResults(html, url)
+    if (shouldBroaden(search, parsed)) {
+      search.titleOnly = true
+      mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Trying the book title without the author…") }
+      lookupJob = scope.launch { runLookup(search) }
+      return
+    }
+    val editions = BookSearch.rank(parsed, search.query, search.title, search.author)
     searchSucceeded = true
     searchResults = editions
     mutable.update { it.copy(accessUrl = null, searching = false, editions = editions, lookupMessage = if (editions.isEmpty()) "No book editions were found on this page. Search again or import an ebook." else null) }

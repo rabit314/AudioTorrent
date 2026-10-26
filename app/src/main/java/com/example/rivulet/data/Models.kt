@@ -52,6 +52,7 @@ data class TorrentUi(
   val files: List<AudioFile>,
   val error: String? = null,
   val coverUrl: String? = null,
+  val catalogTitle: String? = null,
 ) {
   /**
    * Audio files serialized by the exact sequence defined by the torrent provider (index order).

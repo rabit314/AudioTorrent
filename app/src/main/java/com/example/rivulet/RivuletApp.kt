@@ -5,6 +5,7 @@ import android.content.Context
 import com.example.rivulet.data.TorrentDatabase
 import com.example.rivulet.data.audiobookbay.AudioBookBayClient
 import com.example.rivulet.playback.PlaybackController
+import com.example.rivulet.playback.PreparedPlayback
 import com.example.rivulet.stream.StreamServer
 import com.example.rivulet.torrent.TorrentEngine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,8 +25,8 @@ class AppContainer(context: Context) {
     streamServer.start()
     playback.trackPreparer = { infoHash, fileIndex ->
       val stream = engine.prepareStream(infoHash, fileIndex)
-      stream.awaitStart()
-      streamServer.streamUrl(infoHash, fileIndex)
+      // The HTTP reader waits for verified ranges. Open Player/Text while audio buffers.
+      PreparedPlayback(streamServer.streamUrl(infoHash, fileIndex)) { engine.abandonPreparation(stream) }
     }
     playback.queueProvider = { infoHash ->
       val torrent = engine.torrents.value.firstOrNull { it.infoHash == infoHash }

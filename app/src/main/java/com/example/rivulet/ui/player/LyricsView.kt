@@ -42,6 +42,7 @@ fun LyricsView(
   onSeekToLine: (TimedLine) -> Unit,
   modifier: Modifier = Modifier,
   onSyncNow: (SyncTarget) -> Unit = { repository.correctionUnavailable("Start or prepare the audio before correcting sync.") },
+  searchAuthor: String = "",
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
   val list = key(state.track) { rememberLazyListState() }
@@ -49,7 +50,13 @@ fun LyricsView(
   var following by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
   var followingBeforeCorrection by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
   var handledCorrectionEvent by rememberSaveable(state.track, state.bookId, state.source) { mutableLongStateOf(-1L) }
-  var query by rememberSaveable(state.track) { mutableStateOf(cleanBookTitle) }
+  val suggestedQuery = BookIdentity(cleanBookTitle, searchAuthor).query
+  var previousSuggestion by rememberSaveable(state.track) { mutableStateOf(suggestedQuery) }
+  var query by rememberSaveable(state.track) { mutableStateOf(suggestedQuery) }
+  LaunchedEffect(suggestedQuery) {
+    if (query == previousSuggestion) query = suggestedQuery
+    previousSuggestion = suggestedQuery
+  }
   var showSearch by rememberSaveable(state.track) { mutableStateOf(false) }
   var showOptions by remember { mutableStateOf(false) }
   var showTracks by remember(state.track) { mutableStateOf(false) }
@@ -71,7 +78,9 @@ fun LyricsView(
     pickedFor = state.track; pickedTracks = selectedTracks
     picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
   }
-  val findText = { pendingEdition = null; showSearch = true; repository.searchBooks(query) }
+  fun search() = repository.searchBooks(query, title = if (query == suggestedQuery) cleanBookTitle else query,
+    author = if (query == suggestedQuery) searchAuthor else "")
+  val findText = { pendingEdition = null; showSearch = true; search() }
   val beginCorrection: (Long?) -> Unit = { sentenceId ->
     if (!state.correction.isEditing) followingBeforeCorrection = following
     following = false
@@ -162,7 +171,7 @@ fun LyricsView(
     onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
     text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
       OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-      TextButton(onClick = { pendingEdition = null; repository.searchBooks(query) }) { Text("Search") }
+      TextButton(onClick = { pendingEdition = null; search() }) { Text("Search") }
       ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
       LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
         items(state.editions, key = { it.url }) { edition ->
@@ -208,7 +217,7 @@ fun LyricsView(
     ZLibraryAccessDialog(url, onDismiss = { repository.dismissAccess() }, onReady = { html, loadedUrl ->
       repository.dismissAccess()
       val edition = pendingEdition
-      if (edition == null) repository.acceptRenderedSearch(html, loadedUrl) else repository.downloadEdition(edition, selectedTracks, html)
+      if (edition == null) repository.acceptRenderedSearch(html, loadedUrl, state.track) else repository.downloadEdition(edition, selectedTracks, html)
     })
   }
 }

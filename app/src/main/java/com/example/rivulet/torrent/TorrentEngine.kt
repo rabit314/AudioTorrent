@@ -3,6 +3,7 @@ package com.example.rivulet.torrent
 import android.content.Context
 import android.util.Log
 import com.example.rivulet.data.AudioFile
+import com.example.rivulet.data.BookCatalogMetadata
 import com.example.rivulet.data.SavedTorrent
 import com.example.rivulet.data.TorrentDatabase
 import com.example.rivulet.data.TorrentUi
@@ -15,6 +16,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -49,6 +52,7 @@ import org.libtorrent4j.swig.torrent_flags_t
 class TorrentEngine(
   context: Context,
   val database: TorrentDatabase = TorrentDatabase(context),
+  private val streamIdleTimeoutMs: Long = 60_000L,
 ) : AlertListener {
 
   private val appContext = context.applicationContext
@@ -56,6 +60,7 @@ class TorrentEngine(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val saveDir = File(appContext.filesDir, "torrents")
   private val magnetTempDir = File(appContext.cacheDir, "magnet")
+  private val catalogMetadata = BookCatalogMetadata(appContext)
 
   private val handles = ConcurrentHashMap<String, TorrentHandle>()
   private val errors = ConcurrentHashMap<String, String>()
@@ -65,6 +70,7 @@ class TorrentEngine(
   private val streamLock = Mutex()
 
   @Volatile private var activeStream: StreamSession? = null
+  @Volatile private var selectedStreamKey: Pair<String, Int>? = null
   private var streamIdleJob: Job? = null
 
   private val _torrents = MutableStateFlow<List<TorrentUi>>(emptyList())
@@ -162,7 +168,7 @@ class TorrentEngine(
   // Adding torrents
   // ---------------------------------------------------------------------------------------------
 
-  suspend fun addMagnet(uri: String, coverUrl: String? = null): Result<String> = withContext(Dispatchers.IO) {
+  suspend fun addMagnet(uri: String, coverUrl: String? = null, catalogTitle: String? = null): Result<String> = withContext(Dispatchers.IO) {
     addLock.withLock {
       runCatching {
         ensureReady()
@@ -175,6 +181,7 @@ class TorrentEngine(
             ?: error("Couldn't fetch metadata. The swarm may be empty or the link may be dead.")
         val info = TorrentInfo(bytes)
         val hash = info.infoHash().toHex()
+        catalogTitle?.takeIf { it.isNotBlank() }?.let { catalogMetadata.save(hash, it) }
         database.saveTorrent(
           SavedTorrent(
             infoHash = hash,
@@ -268,10 +275,28 @@ class TorrentEngine(
   // ---------------------------------------------------------------------------------------------
 
   /** Creates (or reuses) the lease for a file and starts prioritizing its data. */
-  suspend fun prepareStream(hash: String, fileIndex: Int): StreamSession =
-    withContext(Dispatchers.IO) {
-      streamLock.withLock { prepareStreamLocked(hash, fileIndex) }
+  suspend fun prepareStream(hash: String, fileIndex: Int): StreamSession {
+    var prepared: StreamSession? = null
+    try {
+      return withContext(Dispatchers.IO) {
+        streamLock.withLock { prepareStreamLocked(hash, fileIndex).also { prepared = it } }
+      }
+    } catch (cancelled: CancellationException) {
+      withContext(NonCancellable) { prepared?.let { abandonPreparation(it) } }
+      throw cancelled
     }
+  }
+
+  /** Never close another request's stream, nor one already acquired by playback/analysis. */
+  suspend fun abandonPreparation(stream: StreamSession) = withContext(Dispatchers.IO) {
+    streamLock.withLock {
+      if (activeStream === stream && stream.referenceCount == 0) {
+        activeStream = null
+        selectedStreamKey = null
+        stream.close(calculateEffectivePriority(stream.infoHash, stream.fileIndex))
+      }
+    }
+  }
 
   private fun prepareStreamLocked(hash: String, fileIndex: Int): StreamSession {
     val handle = getLiveHandle(hash) ?: error("Torrent not found.")
@@ -291,11 +316,13 @@ class TorrentEngine(
     streamIdleJob?.cancel()
     streamIdleJob = null
     val prevStream = activeStream
+    activeStream = null
     if (prevStream != null && !prevStream.isClosed) {
       val restorePriority = calculateEffectivePriority(prevStream.infoHash, prevStream.fileIndex)
       prevStream.close(restorePriority)
     }
     activeStream = stream
+    selectedStreamKey = hash to fileIndex
     stream.start()
     Log.d(TAG, "Prepared stream $hash/$fileIndex: ${stream.name}, $size bytes")
     return stream
@@ -312,9 +339,8 @@ class TorrentEngine(
           current.retain()
           current
         } else {
-          val stream = prepareStreamLocked(hash, fileIndex)
-          stream.retain()
-          stream
+          check(selectedStreamKey == (hash to fileIndex)) { "This audio request is no longer active. Start the selected track again." }
+          prepareStreamLocked(hash, fileIndex).also { it.retain() }
         }
       }
     }
@@ -363,11 +389,11 @@ class TorrentEngine(
 
   suspend fun releaseStream(stream: StreamSession) {
     streamLock.withLock {
-      if (stream.release() > 0) return@withLock
+      if (stream.release() > 0 || activeStream !== stream) return@withLock
       // Stream is idle. Grace period: keep piece priorities for 60s to avoid churning swarm on pause
       streamIdleJob?.cancel()
       streamIdleJob = scope.launch(Dispatchers.IO) {
-        delay(60_000L)
+        delay(streamIdleTimeoutMs)
         streamLock.withLock {
           if (activeStream === stream && !stream.isClosed) {
             activeStream = null
@@ -425,6 +451,11 @@ class TorrentEngine(
       val handle = handles.remove(hash)
       val info = handle?.let { runCatching { it.torrentFile() }.getOrNull() }
       val savePath = handle?.let { runCatching { it.savePath() }.getOrNull() }
+      // The native file storage is borrowed from the handle and dies on session.remove.
+      val paths = if (deleteFiles && info != null) {
+        val storage = info.files()
+        (0 until storage.numFiles()).map { storage.filePath(it) }
+      } else emptyList()
 
       streamLock.withLock {
         if (activeStream?.infoHash == hash) {
@@ -436,11 +467,11 @@ class TorrentEngine(
         runCatching { session.remove(handle) }
       }
       database.deleteTorrent(hash)
+      catalogMetadata.remove(hash)
 
-      if (deleteFiles && info != null && savePath != null) {
+      if (deleteFiles && savePath != null) {
         val root = File(savePath)
-        for (i in 0 until info.numFiles()) {
-          val relPath = info.files().filePath(i)
+        for (relPath in paths) {
           val file = File(root, relPath)
           runCatching { file.delete() }
           var parent = file.parentFile
@@ -511,6 +542,7 @@ class TorrentEngine(
             files = files,
             error = errors[hash],
             coverUrl = coverUrl,
+            catalogTitle = catalogMetadata.title(hash),
           )
         )
       } catch (t: Throwable) {

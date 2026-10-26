@@ -35,7 +35,12 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
   var newBookmarkNote by remember { mutableStateOf("") }
   var selectedChaptersTab by remember { mutableStateOf(0) }
   val coroutineScope = rememberCoroutineScope()
-  val cleanBook = BookTitleCleaner.resolveCleanBookTitle(state.title, state.subtitle)
+  val torrent = torrents.firstOrNull { it.infoHash == state.infoHash }
+  val file = torrent?.audioFiles?.firstOrNull { it.index == state.fileIndex }
+  val identity = com.example.rivulet.data.lyrics.BookIdentityResolver.resolve(
+    file?.name ?: state.title, file?.directory, torrent?.name ?: state.subtitle,
+    torrent?.catalogTitle, chapterTrack = (torrent?.audioFiles?.size ?: 0) > 1)
+  val cleanBook = identity.title
   PlayerLayout(
     state = state, title = cleanBook.ifBlank { state.title }, subtitle = state.title,
     chapterLabel = if (currentQueueIndex >= 0) "Chapter ${currentQueueIndex + 1} of ${queueTracks.size}" else null,
@@ -50,7 +55,7 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
   ) { readerModifier ->
     LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
       cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier,
-      onSyncNow = { container.playback.syncReadAlongNow(it) })
+      onSyncNow = { container.playback.syncReadAlongNow(it) }, searchAuthor = identity.author)
   }
   if (showSpeedDialog) AlertDialog(
     onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },

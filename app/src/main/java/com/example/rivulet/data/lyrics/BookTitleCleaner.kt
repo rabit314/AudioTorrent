@@ -60,17 +60,6 @@ object BookTitleCleaner {
       }
     }
 
-    // If it has "Author - Title", see if we can extract the title
-    if (s.contains(" - ")) {
-      val parts = s.split(" - ")
-      if (parts.size == 2 && parts[1].isNotBlank()) {
-        val candidateTitle = parts[1].trim()
-        if (!isGenericTrackName(candidateTitle)) {
-          s = candidateTitle
-        }
-      }
-    }
-
     return s.replace(Regex("\\s+"), " ").trim()
   }
 
@@ -102,14 +91,6 @@ object BookTitleCleaner {
       s = s.replace(tagRegex, "")
     }
 
-    // If format is "Author - Title", extract Title
-    if (s.contains(" - ")) {
-      val parts = s.split(" - ")
-      if (parts.size == 2 && parts[1].isNotBlank()) {
-        s = parts[1].trim()
-      }
-    }
-
     return s.replace(Regex("\\s+"), " ").trim()
   }
 
@@ -124,23 +105,6 @@ object BookTitleCleaner {
    *   -> Returns "Fahrenheit 451".
    */
   fun resolveCleanBookTitle(trackTitle: String?, containerTitle: String?): String {
-    val cleanedTrack = cleanFileNameOrTrack(trackTitle)
-    val cleanedContainer = cleanContainerTitle(containerTitle)
-
-    // If the track title contains a specific non-generic book name (e.g. "Soul Hunter"), prioritize it!
-    if (cleanedTrack.isNotBlank() && !isGenericTrackName(cleanedTrack)) {
-      return cleanedTrack
-    }
-
-    // Otherwise fall back to the container/torrent title (e.g. "Fahrenheit 451")
-    if (cleanedContainer.isNotBlank()) {
-      return cleanedContainer
-    }
-
-    if (cleanedTrack.isNotBlank()) {
-      return cleanedTrack
-    }
-
-    return "Audiobook"
+    return BookIdentityResolver.resolve(trackTitle, container = containerTitle).title
   }
 }
