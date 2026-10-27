@@ -11,8 +11,12 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.nio.ByteOrder
 
-class AudioWindowDecoder(private val dataSource: suspend (ReadAlongTrack) -> MediaDataSource) {
-  suspend fun decode(track: ReadAlongTrack, startMs: Long, durationMs: Long): FloatArray = withContext(Dispatchers.IO) {
+fun interface ReadAlongAudioDecoder {
+  suspend fun decode(track: ReadAlongTrack, startMs: Long, durationMs: Long): FloatArray
+}
+
+class AudioWindowDecoder(private val dataSource: suspend (ReadAlongTrack) -> MediaDataSource) : ReadAlongAudioDecoder {
+  override suspend fun decode(track: ReadAlongTrack, startMs: Long, durationMs: Long): FloatArray = withContext(Dispatchers.IO) {
     require(durationMs in 1..30_000) { "Audio analysis windows must be bounded." }
     val extractor = MediaExtractor()
     var codec: MediaCodec? = null

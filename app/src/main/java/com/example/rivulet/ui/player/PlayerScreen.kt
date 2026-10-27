@@ -55,7 +55,9 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
   ) { readerModifier ->
     LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
       cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier,
-      onSyncNow = { container.playback.syncReadAlongNow(it) }, searchAuthor = identity.author)
+      onSyncNow = { container.playback.syncReadAlongNow(it) }, searchAuthor = identity.author,
+      bookIdentityReady = file != null,
+      bookIdentityTrack = state.infoHash?.let { com.example.rivulet.data.lyrics.ReadAlongTrack(it, state.fileIndex) })
   }
   if (showSpeedDialog) AlertDialog(
     onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },

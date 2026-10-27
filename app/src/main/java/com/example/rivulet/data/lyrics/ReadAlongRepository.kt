@@ -1,8 +1,11 @@
 package com.example.rivulet.data.lyrics
 
 import android.content.Context
+import android.content.ComponentCallbacks2
+import android.content.res.Configuration
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +25,7 @@ import kotlinx.coroutines.withContext
 class ReadAlongRepository(
   private val context: Context,
   private val store: ReadAlongStore,
-  private val decoder: AudioWindowDecoder,
+  private val decoder: ReadAlongAudioDecoder,
   private val speech: SpeechRecognizer = WhisperEngine(),
   private val models: SpeechModelManager = SpeechModelManager(context),
   private val library: BookCatalog = ZLibraryClient { url -> android.webkit.CookieManager.getInstance().getCookie(url) },
@@ -30,6 +33,7 @@ class ReadAlongRepository(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val mutable = MutableStateFlow(ReadAlongState())
   val state = mutable.asStateFlow()
+  val readerPreferences = ReaderPreferences(context)
   private var generation = 0L
   private var loadJob: Job? = null
   private var importJob: Job? = null
@@ -42,7 +46,12 @@ class ReadAlongRepository(
   private var searchSucceeded = false
   private var searchResults: List<BookEdition> = emptyList()
   private data class Lookup(val track: ReadAlongTrack, val version: Long, val request: Long,
-    val query: String, val title: String, val author: String, var titleOnly: Boolean = false)
+    val query: String, val title: String, val author: String, var titleOnly: Boolean = false,
+    val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet())
+  private data class AutomaticResult(val editions: List<BookEdition>, val message: String?)
+  private val automaticAttempts = mutableMapOf<String, AutomaticResult?>()
+  private data class Download(val track: ReadAlongTrack, val version: Long, val edition: BookEdition, val indices: Set<Int>)
+  private var pendingDownload: Download? = null
   private var lookup: Lookup? = null
   private var lookupSequence = 0L
   private var recoveryAction: (() -> Unit)? = null
@@ -52,6 +61,7 @@ class ReadAlongRepository(
   private var timings = LinkedHashMap<Long, TimedLine>()
   private var positionMs = 0L
   private var durationMs = 0L
+  private var playbackReady = false
   private var visible = false
   private var estimated = false
   private var chapterHint: Int? = null
@@ -61,15 +71,27 @@ class ReadAlongRepository(
   private var pendingReference: SyncReference? = null
   private data class UndoCorrection(val target: SyncTarget, val offset: Long, val chapter: Int?, val sentenceHint: Int?)
   private var undoCorrection: UndoCorrection? = null
+  @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+  private val memoryCallbacks = object : ComponentCallbacks2 {
+    override fun onConfigurationChanged(newConfig: Configuration) {}
+    override fun onLowMemory() { speech.release() }
+    override fun onTrimMemory(level: Int) {
+      if (level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) speech.release()
+    }
+  }
+  init { context.applicationContext.registerComponentCallbacks(memoryCallbacks) }
 
-  fun activate(track: ReadAlongTrack) {
+  fun activate(track: ReadAlongTrack, initialPositionMs: Long = 0, initialDurationMs: Long = 0) {
     if (mutable.value.track == track) return
     invalidateCorrection()
     generation++
+    lookup?.automaticKey?.let { if (lookupJob?.isActive == true && automaticAttempts[it] == null) automaticAttempts.remove(it) }
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel()
+    pendingDownload = null
     source = null; sentences = emptyList(); matcher = null; timings.clear(); estimated = false
     searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; lookup = null; recoveryAction = null
-    positionMs = 0; durationMs = 0; selectedHint = null; chapterHint = null; exhaustedBase = null
+    positionMs = initialPositionMs.coerceAtLeast(0); durationMs = initialDurationMs.coerceAtLeast(0); playbackReady = false
+    selectedHint = null; chapterHint = null; exhaustedBase = null
     mutable.value = ReadAlongState(track = track, phase = ReadAlongPhase.LOADING)
     load(track, generation)
   }
@@ -114,17 +136,20 @@ class ReadAlongRepository(
 
   fun setVisible(value: Boolean) {
     visible = value
-    if (value) scheduleAnalysis() else { analysisJob?.cancel(); analysisJob = null }
+    // Let a bounded in-flight window finish so returning to Text doesn't discard useful work.
+    if (value) scheduleAnalysis()
   }
 
-  fun playback(position: Long, duration: Long) {
+  fun playback(position: Long, duration: Long, track: ReadAlongTrack? = mutable.value.track, prepared: Boolean = true) {
+    if (track != mutable.value.track) return
+    playbackReady = prepared
     positionMs = position.coerceAtLeast(0)
     durationMs = duration.coerceAtLeast(0)
     val snapshot = mutable.value
     mutable.update { it.copy(activeLineIndex = ReadAlongTimeline.activeIndex(it.lines, positionMs, it.offsetMs)) }
     if (estimated && durationMs > 0 && snapshot.lines.none { it.isTimed }) useEstimatedTiming()
     // A seek cancels work far from the new playhead, then prioritizes that passage.
-    if (analysisJob?.isActive == true && analysisStartMs >= 0 && kotlin.math.abs(positionMs - analysisStartMs) > 90_000) {
+    if (analysisJob?.isActive == true && analysisStartMs >= 0 && kotlin.math.abs(positionMs - analysisStartMs) > 30_000) {
       analysisJob?.cancel(); analysisJob = null
     }
     scheduleAnalysis()
@@ -145,16 +170,35 @@ class ReadAlongRepository(
     startImport(track, selectedTracks) { Triple(bytes, name, mime) }
   }
 
-  fun searchBooks(query: String, force: Boolean = false, title: String = query, author: String = "") {
+  fun ensureBookText(identity: BookIdentity, selectedTracks: Set<Int>, expectedTrack: ReadAlongTrack? = mutable.value.track) {
+    val snapshot = mutable.value
+    val track = snapshot.track ?: return
+    if (track != expectedTrack || !visible || snapshot.bookId != null || snapshot.phase != ReadAlongPhase.EMPTY || snapshot.searching ||
+      identity.title.isBlank() || identity.title.equals("Audiobook", true)) return
+    val key = listOf(track.infoHash, selectedTracks.sorted().joinToString(","),
+      ReadAlongText.tokens(identity.title).joinToString(" "), ReadAlongText.tokens(identity.author).sorted().joinToString(" ")).joinToString("\n")
+    if (automaticAttempts.containsKey(key)) {
+      automaticAttempts[key]?.let { saved -> mutable.update { it.copy(editions = saved.editions,
+        choosingEdition = saved.editions.isNotEmpty(), lookupMessage = saved.message) } }
+      return
+    }
+    automaticAttempts[key] = null
+    searchBooks(identity.query, title = identity.title, author = identity.author, automaticKey = key, selectedTracks = selectedTracks)
+  }
+
+  fun searchBooks(query: String, force: Boolean = false, title: String = query, author: String = "",
+    automaticKey: String? = null, selectedTracks: Set<Int> = emptySet()) {
     val track = mutable.value.track ?: return
+    pendingDownload = null
     fun normalize(value: String) = value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
     if (query.isBlank()) { mutable.update { it.copy(lookupMessage = "Enter a book title.") }; return }
     val normalized = listOf(query, title, author).joinToString("\n") { normalize(it) }
     if (!force && searchKey == normalized && searchSucceeded) {
       lookupJob?.cancel()
-      lookup = Lookup(track, generation, ++lookupSequence, query.trim(), title.trim(), author.trim())
+      val search = Lookup(track, generation, ++lookupSequence, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks)
+      lookup = search
       clearRecovery()
-      mutable.update { it.copy(searching = false, accessUrl = null, editions = searchResults, lookupMessage = if (searchResults.isEmpty()) "No editions found. Try a different title or import your ebook." else null) }
+      finishLookup(search, searchResults)
       return
     }
     if (!force && searchKey == normalized && lookupJob?.isActive == true && mutable.value.searching) return
@@ -163,8 +207,8 @@ class ReadAlongRepository(
     val request = ++lookupSequence
     lookupJob?.cancel()
     clearRecovery()
-    mutable.update { it.copy(searching = true, editions = emptyList(), accessUrl = null, lookupMessage = null) }
-    val search = Lookup(track, version, request, query.trim(), title.trim(), author.trim())
+    mutable.update { it.copy(searching = true, editions = emptyList(), accessUrl = null, lookupMessage = null, choosingEdition = false) }
+    val search = Lookup(track, version, request, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks)
     lookup = search
     lookupJob = scope.launch { runLookup(search) }
   }
@@ -181,19 +225,36 @@ class ReadAlongRepository(
             runLookup(search)
             return
           }
-          searchSucceeded = true
-          searchResults = BookSearch.rank(results, search.query, search.title, search.author)
-          mutable.update { it.copy(searching = false, editions = searchResults, lookupMessage = if (results.isEmpty()) "No editions found. Try a different title or import your ebook." else if (search.titleOnly) "Results for ${search.title} (title only)." else null) }
+          finishLookup(search, results)
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
         if (lookupCurrent(search)) {
+          search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(emptyList(), error.message) }
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
           if (error !is SiteAccessRequired) offerRecovery(search.track, search.version, "Retry search") {
-            searchBooks(search.query, force = true, title = search.title, author = search.author)
+            searchBooks(search.query, force = true, title = search.title, author = search.author,
+              automaticKey = search.automaticKey, selectedTracks = search.selectedTracks)
           }
         }
       }
+  }
+
+  private fun finishLookup(search: Lookup, results: List<BookEdition>) {
+    if (!lookupCurrent(search)) return
+    searchSucceeded = true
+    searchResults = BookSearch.rank(results, search.query, search.title, search.author)
+    val message = if (results.isEmpty()) "No editions found. Try a different title or import your ebook."
+      else if (search.automaticKey != null) "Choose the edition that matches your audiobook."
+      else if (search.titleOnly) "Results for ${search.title} (title only)." else null
+    search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(searchResults, message) }
+    mutable.update { it.copy(searching = false, accessUrl = null, editions = searchResults,
+      choosingEdition = search.automaticKey != null && results.isNotEmpty(), lookupMessage = message) }
+    if (search.automaticKey != null) {
+      BookSearch.automaticEdition(searchResults, BookIdentity(search.title, search.author))?.let {
+        downloadEdition(it, search.selectedTracks)
+      }
+    }
   }
 
   private fun shouldBroaden(search: Lookup, results: List<BookEdition>) = !search.titleOnly &&
@@ -205,8 +266,9 @@ class ReadAlongRepository(
     val version = generation
     val request = ++lookupSequence
     lookupJob?.cancel()
+    pendingDownload = Download(track, version, edition, selectedTracks)
     clearRecovery()
-    mutable.update { it.copy(searching = true, lookupMessage = "Downloading ${edition.title}…", accessUrl = null) }
+    mutable.update { it.copy(searching = true, lookupMessage = "Downloading ${edition.title}…", accessUrl = null, choosingEdition = false) }
     lookupJob = scope.launch {
       try {
         val (bytes, name, mime) = withContext(Dispatchers.IO) { library.download(edition, renderedHtml) }
@@ -224,7 +286,23 @@ class ReadAlongRepository(
     }
   }
 
-  fun dismissAccess() { mutable.update { it.copy(accessUrl = null) } }
+  fun resumeSiteAccess(html: String, url: String, expectedTrack: ReadAlongTrack?) {
+    if (expectedTrack != mutable.value.track) return
+    val download = pendingDownload
+    if (download != null && current(download.track, download.version)) {
+      // A login flow can finish on a different page. Re-fetch the edition unless this is its page.
+      val editionPage = url.substringBefore('?').trimEnd('/') == download.edition.url.substringBefore('?').trimEnd('/')
+      downloadEdition(download.edition, download.indices, html.takeIf { editionPage })
+    } else {
+      val search = lookup ?: return
+      if (!lookupCurrent(search)) return
+      if (url.contains("/s/")) acceptRenderedSearch(html, url, expectedTrack)
+      else {
+        mutable.update { it.copy(accessUrl = null, searching = true) }
+        lookupJob = scope.launch { runLookup(search) }
+      }
+    }
+  }
 
   fun acceptRenderedSearch(html: String, url: String, expectedTrack: ReadAlongTrack? = mutable.value.track) {
     if (expectedTrack != mutable.value.track) return
@@ -237,10 +315,7 @@ class ReadAlongRepository(
       lookupJob = scope.launch { runLookup(search) }
       return
     }
-    val editions = BookSearch.rank(parsed, search.query, search.title, search.author)
-    searchSucceeded = true
-    searchResults = editions
-    mutable.update { it.copy(accessUrl = null, searching = false, editions = editions, lookupMessage = if (editions.isEmpty()) "No book editions were found on this page. Search again or import an ebook." else null) }
+    finishLookup(search, parsed)
   }
 
   fun reportImportError(message: String) {
@@ -263,6 +338,7 @@ class ReadAlongRepository(
   private fun startImport(track: ReadAlongTrack, selectedTracks: Set<Int>, read: () -> Triple<ByteArray, String, String?>) {
     invalidateCorrection()
     generation++
+    pendingDownload = null
     val version = generation
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
     clearRecovery()
@@ -318,6 +394,7 @@ class ReadAlongRepository(
       try {
         mutable.update { it.copy(modelProgress = 0, message = "Downloading the English speech model…") }
         models.download { progress -> mutable.update { it.copy(modelProgress = progress) } }
+        exhaustedBase = null
         mutable.update { it.copy(modelProgress = null, phase = if (it.phase == ReadAlongPhase.NEEDS_MODEL) ReadAlongPhase.READY else it.phase, message = it.message?.takeUnless { text -> text.startsWith("Downloading the English") }) }
         if (mutable.value.correction.needsModel) mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.SELECTING, needsModel = false, message = "Model ready. Press Sync now when this sentence begins.")) }
         scheduleAnalysis()
@@ -333,56 +410,92 @@ class ReadAlongRepository(
   }
 
   private var analysisStartMs = -1L
+  private var analysisSequence = 0L
+  private fun windowBase() = (positionMs / 20_000) * 20_000
+
+  fun retryCurrentPassage() {
+    val track = mutable.value.track ?: return
+    val book = source ?: return
+    val version = generation
+    analysisJob?.cancel(); analysisJob = null; analysisSequence++
+    val base = windowBase()
+    scope.launch {
+      withContext(Dispatchers.IO) { store.retryWindow(track, book.id, base) }
+      if (current(track, version)) {
+        exhaustedBase = null; clearRecovery()
+        mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }
+        scheduleAnalysis()
+      }
+    }
+  }
+
   private fun scheduleAnalysis() {
     val book = source ?: return
     val track = mutable.value.track ?: return
-    if (!visible || estimated || mutable.value.correction.isEditing || correctionJob?.isActive == true || book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
+    if (!visible || !playbackReady || estimated || mutable.value.correction.isEditing || correctionJob?.isActive == true ||
+      book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true ||
+      importJob?.isActive == true || analysisJob?.isActive == true) return
     if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
-    val requestedBase = ((positionMs - 5_000).coerceAtLeast(0) / 20_000) * 20_000
-    if (exhaustedBase == requestedBase) return
-    if (!models.isInstalled()) {
-      if (modelJob?.isActive != true) mutable.update { it.copy(phase = ReadAlongPhase.NEEDS_MODEL, message = "Download the English speech model (60 MB) to match the narrator on this phone.") }
-      return
-    }
+    if (exhaustedBase == windowBase()) return
     val version = generation
+    val request = ++analysisSequence
     analysisJob = scope.launch {
+      fun valid() = current(track, version) && request == analysisSequence
       try {
-        while (isActive && visible && current(track, version)) {
-          val base = ((positionMs - 5_000).coerceAtLeast(0) / 20_000) * 20_000
-          val starts = (0..5).map { base + it * 20_000 }.filter { it < durationMs }
-          val start = withContext(Dispatchers.IO) { starts.firstOrNull { !store.windowReady(track, book.id, it) } }
+        while (isActive && visible && valid()) {
+          val base = windowBase()
+          val starts = listOf(base, base + 20_000).filter { it < durationMs }
+          val pending = withContext(Dispatchers.IO) { starts.filter { !store.windowReady(track, book.id, it) } }
+          if (!valid()) return@launch
+          Log.d("ReadAlongPerf", "cacheHits=${starts.size - pending.size} requestedWindows=${starts.size}")
+          val start = pending.firstOrNull()
           if (start == null) { exhaustedBase = base; break }
-          // Measure distance from the initiating playhead, not from speculative look-ahead work.
+          val ahead = start > base
+          if (!models.isInstalled()) {
+            exhaustedBase = base
+            if (!ahead && modelJob?.isActive != true) mutable.update { it.copy(phase = ReadAlongPhase.NEEDS_MODEL,
+              message = "Download the English speech model (60 MB) to match the narrator on this phone.") }
+            break
+          }
           analysisStartMs = positionMs
-          mutable.update { it.copy(phase = ReadAlongPhase.PREPARING, message = "Preparing sync… Audio can keep playing.") }
+          mutable.update { it.copy(phase = if (ahead) ReadAlongPhase.READY else ReadAlongPhase.PREPARING,
+            preparingAhead = ahead, message = if (ahead) null else "Preparing sync… Audio can keep playing.") }
           val began = android.os.SystemClock.elapsedRealtime()
-          val pcm = decoder.decode(track, start, minOf(30_000, durationMs - start))
-          val words = speech.transcribe(models.file, pcm).map { it.copy(startMs = it.startMs + start, endMs = it.endMs + start) }
+          val decodeStart = (start - 5_000).coerceAtLeast(0)
+          val pcm = decoder.decode(track, decodeStart, minOf(30_000, durationMs - decodeStart))
+          val decoded = android.os.SystemClock.elapsedRealtime()
+          val words = speech.transcribe(models.file, pcm).map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
+          val recognized = android.os.SystemClock.elapsedRealtime()
           val activeMatcher = matcher
           val hint = selectedHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
           val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
-          if (!current(track, version)) return@launch
-          // Base timestamps stay stable across overlapping recognition windows and manual corrections.
+          if (!valid()) return@launch
           val lines = matched.filter { it.id !in timings }
           withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines) }
-          if (!current(track, version)) return@launch
+          if (!valid()) return@launch
           lines.forEach { timings[it.id] = it }
-          mutable.update { it.copy(alignmentAttempted = true, analysisMillis = android.os.SystemClock.elapsedRealtime() - began, message = if (matched.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else null) }
+          Log.d("ReadAlongPerf", "decodeMs=${decoded-began} recognitionMs=${recognized-decoded} matchMs=${android.os.SystemClock.elapsedRealtime()-recognized} matched=${matched.size} ahead=$ahead")
+          mutable.update { it.copy(alignmentAttempted = true, phase = ReadAlongPhase.READY, preparingAhead = false,
+            analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
+            message = if (!ahead && matched.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           publishLines()
           delay(100)
         }
-        if (current(track, version)) mutable.update { it.copy(phase = ReadAlongPhase.READY) }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
-        if (current(track, version)) {
-          mutable.update { it.copy(phase = ReadAlongPhase.ERROR, message = error.message ?: "Could not prepare speech synchronization.") }
-          offerRecovery(track, version, "Retry matching") {
-            mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }
-            analysisJob = null
-            scheduleAnalysis()
-          }
+        if (valid()) {
+          exhaustedBase = windowBase()
+          // A failed future passage must not hide already usable current text.
+          mutable.update { it.copy(phase = if (it.preparingAhead) ReadAlongPhase.READY else ReadAlongPhase.ERROR,
+            preparingAhead = false, message = error.message ?: "Could not prepare speech synchronization.") }
+          offerRecovery(track, version, "Retry matching", ::retryCurrentPassage)
         }
-      } finally { analysisStartMs = -1 }
+      } finally {
+        if (request == analysisSequence) {
+          analysisStartMs = -1
+          mutable.update { it.copy(preparingAhead = false, phase = if (it.phase == ReadAlongPhase.PREPARING) ReadAlongPhase.READY else it.phase) }
+        }
+      }
     }
   }
 
@@ -476,6 +589,9 @@ class ReadAlongRepository(
 
   /** Called for an actual player seek, never for ordinary playback progression or speed changes. */
   fun playbackDiscontinuity() {
+    playbackReady = false
+    analysisJob?.cancel(); analysisJob = null; analysisSequence++; exhaustedBase = null
+    mutable.update { it.copy(preparingAhead = false, phase = if (it.phase == ReadAlongPhase.PREPARING) ReadAlongPhase.READY else it.phase) }
     if (pendingReference == null && correctionJob?.isActive != true) return
     val target = mutable.value.correction.target
     stopCorrectionWork()
@@ -617,5 +733,9 @@ class ReadAlongRepository(
     if (error is CancellationException) throw error
     if (current(track, version)) mutable.update { it.copy(phase = ReadAlongPhase.ERROR, message = error.message ?: "Unable to load companion text.") }
   }
-  fun close() { scope.cancel() }
+  fun close() {
+    scope.cancel()
+    context.applicationContext.unregisterComponentCallbacks(memoryCallbacks)
+    speech.close()
+  }
 }

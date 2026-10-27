@@ -156,7 +156,7 @@ class PlaybackController(
         currentCoverUrl = latest.coverUrl
         currentInfoHash = latest.infoHash
         currentFileIndex = latest.fileIndex
-        readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(latest.infoHash, latest.fileIndex))
+        readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(latest.infoHash, latest.fileIndex), latest.positionMs, latest.durationMs)
         _state.value =
           PlaybackUi(
             title = latest.bookTitle,
@@ -218,7 +218,14 @@ class PlaybackController(
       while (isActive) {
         refreshRestoredMetadata()
         publish()
-        readAlong.playback(player.currentPosition, player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L)
+        val hash = currentInfoHash
+        if (hash != null && currentFileIndex >= 0) {
+          val prepared = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
+          val snapshot = _state.value
+          readAlong.playback(if (prepared) player.currentPosition else snapshot.positionMs,
+            if (prepared) player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L else snapshot.durationMs,
+            com.example.rivulet.data.lyrics.ReadAlongTrack(hash, currentFileIndex), prepared)
+        }
         delay(350)
         ticks++
         if (ticks % 10 == 0 && player.isPlaying) {
@@ -461,7 +468,7 @@ class PlaybackController(
 
     refreshBookmarks()
     if (infoHash != null && fileIndex >= 0) {
-      readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(infoHash, fileIndex))
+      readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(infoHash, fileIndex), effectivePos, savedDuration)
     }
 
     player.prepare()
@@ -723,6 +730,7 @@ class PlaybackController(
 
   private fun publish() {
     val duration = player.duration
+    val restored = _state.value.takeIf { player.mediaItemCount == 0 && it.infoHash == currentInfoHash && it.fileIndex == currentFileIndex }
     _state.value =
       PlaybackUi(
         title = currentTitle,
@@ -735,8 +743,8 @@ class PlaybackController(
         hasMedia = player.mediaItemCount > 0 || (currentInfoHash != null && currentFileIndex >= 0),
         isVoiceBoost = isVoiceBoost,
         isSkipSilence = player.skipSilenceEnabled,
-        positionMs = player.currentPosition.coerceAtLeast(0L),
-        durationMs = if (duration > 0L && duration != C.TIME_UNSET) duration else 0L,
+        positionMs = restored?.positionMs ?: player.currentPosition.coerceAtLeast(0L),
+        durationMs = restored?.durationMs ?: if (duration > 0L && duration != C.TIME_UNSET) duration else 0L,
         bufferedMs = player.bufferedPosition.coerceAtLeast(0L),
         speed = player.playbackParameters.speed,
         hasNext = hasNext(),

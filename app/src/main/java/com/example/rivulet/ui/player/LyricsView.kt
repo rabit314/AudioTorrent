@@ -32,6 +32,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.imageLoader
 import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.lyrics.*
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -43,8 +44,11 @@ fun LyricsView(
   modifier: Modifier = Modifier,
   onSyncNow: (SyncTarget) -> Unit = { repository.correctionUnavailable("Start or prepare the audio before correcting sync.") },
   searchAuthor: String = "",
+  bookIdentityReady: Boolean = true,
+  bookIdentityTrack: ReadAlongTrack? = null,
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
+  val textSize by repository.readerPreferences.textSize.collectAsStateWithLifecycle()
   val list = key(state.track) { rememberLazyListState() }
   val dragged by list.interactionSource.collectIsDraggedAsState()
   var following by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
@@ -62,12 +66,13 @@ fun LyricsView(
   var showTracks by remember(state.track) { mutableStateOf(false) }
   var showChapters by remember(state.track) { mutableStateOf(false) }
   var showAdjustment by remember(state.track) { mutableStateOf(false) }
+  var showTextSize by rememberSaveable { mutableStateOf(false) }
+  var showAccess by remember(state.track) { mutableStateOf(false) }
   var selectedTracks by remember(state.track, audioFiles) {
     mutableStateOf(ReadAlongText.defaultTracks(audioFiles, state.track?.fileIndex ?: -1))
   }
   var pickedFor by remember { mutableStateOf<ReadAlongTrack?>(null) }
   var pickedTracks by remember { mutableStateOf<Set<Int>>(emptySet()) }
-  var pendingEdition by remember(state.track) { mutableStateOf<BookEdition?>(null) }
   val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
     if (uri != null) {
       if (repository.state.value.track == pickedFor) repository.importDocument(uri, pickedTracks)
@@ -80,7 +85,7 @@ fun LyricsView(
   }
   fun search() = repository.searchBooks(query, title = if (query == suggestedQuery) cleanBookTitle else query,
     author = if (query == suggestedQuery) searchAuthor else "")
-  val findText = { pendingEdition = null; showSearch = true; search() }
+  val findText = { showSearch = true; search() }
   val beginCorrection: (Long?) -> Unit = { sentenceId ->
     if (!state.correction.isEditing) followingBeforeCorrection = following
     following = false
@@ -90,9 +95,11 @@ fun LyricsView(
     repository.setVisible(true)
     onDispose { repository.setVisible(false) }
   }
-  LaunchedEffect(state.phase, state.bookId) {
-    if (state.phase == ReadAlongPhase.READY && state.bookId != null && pendingEdition != null && !state.searching) showSearch = false
+  LaunchedEffect(state.track, state.phase, state.bookId, cleanBookTitle, searchAuthor, bookIdentityReady, bookIdentityTrack) {
+    if (bookIdentityReady) repository.ensureBookText(BookIdentity(cleanBookTitle, searchAuthor), selectedTracks, bookIdentityTrack ?: state.track)
+    if (state.bookId != null && state.phase != ReadAlongPhase.LOADING && !state.searching) showSearch = false
   }
+  LaunchedEffect(state.choosingEdition) { if (state.choosingEdition) showSearch = true }
   LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
   LaunchedEffect(dragged) { if (dragged) following = false }
   LaunchedEffect(state.correction.phase, state.correction.event) {
@@ -112,6 +119,7 @@ fun LyricsView(
       Box {
         TextButton(onClick = { showOptions = true }) { Text("Text options") }
         DropdownMenu(showOptions, onDismissRequest = { showOptions = false }) {
+          DropdownMenuItem(text = { Text("Text size") }, onClick = { showOptions = false; showTextSize = true })
           DropdownMenuItem(text = { Text(if (state.bookId == null) "Find book text" else "Replace edition") }, onClick = { showOptions = false; findText() })
           DropdownMenuItem(text = { Text("Import EPUB / TXT / LRC / SRT") }, onClick = { showOptions = false; importFile() })
           DropdownMenuItem(text = { Text("Select audio tracks") }, onClick = { showOptions = false; showTracks = true })
@@ -119,10 +127,11 @@ fun LyricsView(
           if (state.bookId != null) DropdownMenuItem(text = { Text("Synchronization adjustment") }, onClick = { showOptions = false; showAdjustment = true })
           if (state.canEstimate) DropdownMenuItem(text = { Text("Use estimated timing…") }, onClick = { showOptions = false; showAdjustment = true })
           if (state.source == TextSyncSource.EPUB_PACED) DropdownMenuItem(text = { Text("Return to narration matching") }, onClick = { showOptions = false; repository.useNarrationTiming() })
+          if (state.source == TextSyncSource.NARRATION) DropdownMenuItem(text = { Text("Retry current passage") }, onClick = { showOptions = false; repository.retryCurrentPassage() })
         }
       }
     }
-    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
+    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
     if (state.correction.isEditing) {
       val correction = state.correction
       Text(correction.message ?: "Select a sentence. Press Sync now when it begins.", style = MaterialTheme.typography.bodySmall)
@@ -140,7 +149,7 @@ fun LyricsView(
       Text("Text aligned", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
       TextButton(onClick = repository::undoSyncCorrection) { Text("Undo correction") }
     }
-    if (state.bookId == null && state.phase != ReadAlongPhase.LOADING) {
+    if (state.bookId == null && state.phase != ReadAlongPhase.LOADING && !state.searching) {
       Text("Find your edition or import a book to read along.", style = MaterialTheme.typography.bodyMedium)
       FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilledTonalButton(onClick = findText) { Text("Find book text") }
@@ -148,7 +157,7 @@ fun LyricsView(
       }
     }
     if (!following && !state.correction.isEditing) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
-    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       items(state.lines, key = { it.id }) { line ->
         val active = state.lines.getOrNull(state.activeLineIndex)?.id == line.id
         val selected = state.correction.isEditing && state.correction.target?.sentenceId == line.id
@@ -158,8 +167,8 @@ fun LyricsView(
         ).then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)) else Modifier).combinedClickable(
           onClick = { if (state.correction.isEditing) repository.selectCorrectionSentence(line.id) else if (line.isTimed) { onSeekToLine(line); following = true } },
           onLongClick = { beginCorrection(line.id) },
-        ).padding(12.dp)) {
-          Text(line.text, fontSize = if (active || selected) 23.sp else 20.sp, lineHeight = 30.sp,
+        ).padding(10.dp)) {
+          Text(line.text, fontSize = (textSize + if (active || selected) 2 else 0).sp, lineHeight = (textSize + 8).sp,
             fontWeight = if (active || selected) FontWeight.Bold else FontWeight.Medium,
             color = if (active || selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
         }
@@ -171,11 +180,11 @@ fun LyricsView(
     onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
     text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
       OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-      TextButton(onClick = { pendingEdition = null; search() }) { Text("Search") }
-      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel)
+      TextButton(onClick = { search() }) { Text("Search") }
+      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
       LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
         items(state.editions, key = { it.url }) { edition ->
-          BookEditionRow(edition, onSelect = { pendingEdition = edition; repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
+          BookEditionRow(edition, onSelect = { repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
         }
       }
     } }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Done") } },
@@ -213,18 +222,27 @@ fun LyricsView(
       Text("${state.matchedSentences} sentences timed · ${state.source?.displayName ?: "No text"}", style = MaterialTheme.typography.bodySmall)
     } }, confirmButton = { TextButton(onClick = { showAdjustment = false }) { Text("Done") } },
   )
-  state.accessUrl?.let { url ->
-    ZLibraryAccessDialog(url, onDismiss = { repository.dismissAccess() }, onReady = { html, loadedUrl ->
-      repository.dismissAccess()
-      val edition = pendingEdition
-      if (edition == null) repository.acceptRenderedSearch(html, loadedUrl, state.track) else repository.downloadEdition(edition, selectedTracks, html)
+  if (showTextSize) AlertDialog(
+    onDismissRequest = { showTextSize = false }, title = { Text("Text size") },
+    text = { Column {
+      Text("$textSize sp", modifier = Modifier.testTag("reader-text-size"))
+      Slider(value = textSize.toFloat(), onValueChange = { repository.readerPreferences.setTextSize(it.roundToInt()) },
+        valueRange = 14f..26f, steps = 5, modifier = Modifier.testTag("reader-text-size-slider"))
+      Text("The words follow the narration at your reading size.", fontSize = textSize.sp, lineHeight = (textSize + 8).sp)
+      TextButton(onClick = { repository.readerPreferences.setTextSize(ReaderPreferences.DEFAULT_SIZE) }) { Text("Reset") }
+    } }, confirmButton = { TextButton(onClick = { showTextSize = false }) { Text("Done") } },
+  )
+  if (showAccess) state.accessUrl?.let { url ->
+    ZLibraryAccessDialog(url, onDismiss = { showAccess = false }, onReady = { html, loadedUrl ->
+      showAccess = false
+      repository.resumeSiteAccess(html, loadedUrl, state.track)
     })
   }
 }
 
 /** One status area for both acquisition and synchronization, including operation-specific recovery. */
 @Composable
-fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> Unit, onDownloadModel: () -> Unit) {
+fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> Unit, onDownloadModel: () -> Unit, onOpenAccess: () -> Unit = {}) {
   Column(Modifier.fillMaxWidth()) {
     state.progressLabel?.let { label ->
       LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("readalong-progress"))
@@ -236,6 +254,8 @@ fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> 
     state.recoveryLabel?.let { label ->
       TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
     }
+    if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
+    if (state.preparingAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall)
     if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
   }
 }

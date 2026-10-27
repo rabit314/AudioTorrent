@@ -3,6 +3,7 @@
 #include <atomic>
 #include <algorithm>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct Engine {
@@ -26,6 +27,11 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCancel(JNIEnv *, jobjec
     if (handle) reinterpret_cast<Engine *>(handle)->cancelled.store(true);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeResetCancel(JNIEnv *, jobject, jlong handle) {
+    if (handle) reinterpret_cast<Engine *>(handle)->cancelled.store(false);
+}
+
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env, jobject, jlong handle, jfloatArray input) {
     auto *engine = reinterpret_cast<Engine *>(handle);
@@ -35,7 +41,9 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env,
     std::vector<float> pcm(size);
     env->GetFloatArrayRegion(input, 0, size, pcm.data());
     auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.n_threads = 2;
+    // Bound CPU use while letting recognition stay ahead of normal playback on multicore devices.
+    const auto cores = std::thread::hardware_concurrency();
+    params.n_threads = cores ? std::min(4u, cores) : 2;
     params.language = "en";
     params.translate = false;
     params.no_context = true;

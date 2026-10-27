@@ -118,7 +118,8 @@ class ReadAlongIntegrationTest {
       val began = SystemClock.elapsedRealtime()
       val pcm = decoder.decode(ReadAlongTrack("fixture", 0), 0, 11_000)
       assertTrue(pcm.size in 160_000..176_000)
-      val words = WhisperEngine().transcribe(model, pcm)
+      val engine = WhisperEngine()
+      val words = try { engine.transcribe(model, pcm) } finally { engine.close() }
       val transcript = "And so my fellow Americans ask not what your country can do for you ask what you can do for your country."
       val sentences = listOf(BookSentence(1, 1, "JFK inaugural speech", transcript))
       val lines = NarrationMatcher(sentences).align(words)

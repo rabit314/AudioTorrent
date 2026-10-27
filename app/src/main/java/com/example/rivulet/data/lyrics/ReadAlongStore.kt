@@ -116,6 +116,13 @@ class ReadAlongStore(private val database: TorrentDatabase) {
 
   fun windowReady(track: ReadAlongTrack, bookId: String, startMs: Long): Boolean = database.readableDatabase.rawQuery("SELECT 1 FROM readalong_windows WHERE info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>? LIMIT 1", arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString())).use { it.moveToFirst() }
 
+  /** Explicit retry invalidates only completion markers; confident timestamps stay immutable. */
+  fun retryWindow(track: ReadAlongTrack, bookId: String, startMs: Long) {
+    database.writableDatabase.delete("readalong_windows",
+      "info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>?",
+      arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString()))
+  }
+
   fun resetAlignment(track: ReadAlongTrack, bookId: String) {
     val db = database.writableDatabase
     db.beginTransaction()

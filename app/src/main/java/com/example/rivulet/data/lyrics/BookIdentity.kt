@@ -82,6 +82,17 @@ object BookIdentityResolver {
 
 /** One deterministic order for both native HTTP and browser-rendered results. */
 object BookSearch {
+  /** Ranking alone is not sufficient permission to attach an edition automatically. */
+  fun automaticEdition(editions: List<BookEdition>, identity: BookIdentity): BookEdition? {
+    val title = ReadAlongText.tokens(identity.title)
+    val author = ReadAlongText.tokens(identity.author).toSet()
+    if (title.isEmpty() || author.isEmpty()) return null
+    return rank(editions, identity.query, identity.title, identity.author).firstOrNull {
+      ReadAlongText.tokens(it.title) == title && ReadAlongText.tokens(it.author).toSet() == author &&
+        it.format.equals("EPUB", true) && it.language.trim().lowercase() in setOf("english", "en", "eng")
+    }
+  }
+
   fun rank(editions: List<BookEdition>, query: String, title: String = query, author: String = ""): List<BookEdition> {
     fun tokens(text: String) = ReadAlongText.tokens(text).toSet()
     val wanted = tokens(title)
