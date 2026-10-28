@@ -33,7 +33,7 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeResetCancel(JNIEnv *, j
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env, jobject, jlong handle, jfloatArray input) {
+Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env, jobject, jlong handle, jfloatArray input, jboolean adaptive_context) {
     auto *engine = reinterpret_cast<Engine *>(handle);
     const auto wordClass = env->FindClass("com/example/rivulet/data/lyrics/SpeechWord");
     const auto ctor = env->GetMethodID(wordClass, "<init>", "(Ljava/lang/String;JJ)V");
@@ -53,6 +53,12 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env,
     params.split_on_word = true;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
+    // Keep two seconds of silence/context padding. Full-size input retains the original context.
+    // Short batches avoid repeatedly running a 30-second encoder for 12 seconds of speech.
+    if (adaptive_context) {
+        const int frames = (size + 319) / 320; // encoder frames are 20ms
+        params.audio_ctx = std::min(whisper_n_audio_ctx(engine->context), std::max(512, ((frames + 100 + 127) / 128) * 128));
+    }
     params.abort_callback = [](void *data) { return static_cast<Engine *>(data)->cancelled.load(); };
     params.abort_callback_user_data = engine;
     if (whisper_full(engine->context, params, pcm.data(), size) != 0 || engine->cancelled.load()) return env->NewObjectArray(0, wordClass, nullptr);

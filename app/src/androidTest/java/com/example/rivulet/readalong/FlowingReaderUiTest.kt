@@ -2,6 +2,8 @@ package com.example.rivulet.readalong
 
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
+import androidx.test.platform.app.InstrumentationRegistry
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
@@ -163,5 +165,33 @@ class FlowingReaderUiTest {
     assertEquals(0, seeks.get()); assertFalse(r.state.value.correction.isEditing)
     compose.onNodeWithText("Follow narration").performClick()
     assertTrue(scroll() > 0)
+  }
+
+  @Test fun longParagraphSupportsPlatformAccessibilityAndEverySentenceAction() = fixture(
+    (0..79).joinToString(" ") { "Public accessibility sentence continues across the page." }) { r ->
+    compose.setContent { MaterialTheme { LyricsView(r, emptyList(), "Fixture", {}) } }
+    val block = readerParagraphs(r.state.value.lines, TextSyncSource.NARRATION).single()
+    val seen = mutableSetOf<String>()
+    repeat(6) {
+      val node = compose.onNodeWithText(block.text)
+      val actions = node.fetchSemanticsNode().config[SemanticsActions.CustomActions]
+      assertTrue("Keep navigation and sentence actions below the platform budget", actions.size < 32)
+      seen += actions.filter { it.label.startsWith("Seek to:") }.map { it.label }
+      // Compose semantics alone bypass Android's 32-action validation. Traverse real platform
+      // accessibility nodes as UIAutomator/TalkBack do; this crashed on the previous implementation.
+      val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow
+      assertNotNull(root)
+      val queue = ArrayDeque<AccessibilityNodeInfo>(); queue.add(root!!)
+      var visited = 0
+      while (queue.isNotEmpty() && visited < 500) {
+        val info = queue.removeFirst(); visited++
+        repeat(info.childCount) { child -> info.getChild(child)?.let { queue.add(it) } }
+      }
+      assertTrue(visited > 0)
+      val next = actions.firstOrNull { it.label == "More sentence actions" }
+      if (next != null) { compose.runOnUiThread { assertTrue(next.action()) }; compose.waitForIdle() }
+    }
+    assertEquals(80, seen.size)
+    assertEquals(0, r.state.value.activeLineIndex)
   }
 }

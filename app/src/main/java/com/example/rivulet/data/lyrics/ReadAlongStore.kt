@@ -96,7 +96,7 @@ class ReadAlongStore(private val database: TorrentDatabase) {
     buildList { while (c.moveToNext()) add(TimedLine(c.getLong(c.getColumnIndexOrThrow("sentence_id")), c.getLong(c.getColumnIndexOrThrow("start_ms")), c.getLong(c.getColumnIndexOrThrow("end_ms")), c.getString(c.getColumnIndexOrThrow("text")))) }
   }
 
-  fun saveWindow(track: ReadAlongTrack, bookId: String, startMs: Long, endMs: Long, lines: List<TimedLine>) {
+  fun saveWindow(track: ReadAlongTrack, bookId: String, startMs: Long, endMs: Long, lines: List<TimedLine>, complete: Boolean = true) {
     val db = database.writableDatabase
     db.beginTransaction()
     try {
@@ -107,7 +107,7 @@ class ReadAlongStore(private val database: TorrentDatabase) {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId)
         put("sentence_id", line.id); put("start_ms", line.startTimeMs); put("end_ms", line.endTimeMs); put("text", line.text)
       }, SQLiteDatabase.CONFLICT_REPLACE) }
-      db.insertWithOnConflict("readalong_windows", null, ContentValues().apply {
+      if (complete) db.insertWithOnConflict("readalong_windows", null, ContentValues().apply {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId); put("start_ms", startMs); put("end_ms", endMs)
       }, SQLiteDatabase.CONFLICT_REPLACE)
       db.setTransactionSuccessful()

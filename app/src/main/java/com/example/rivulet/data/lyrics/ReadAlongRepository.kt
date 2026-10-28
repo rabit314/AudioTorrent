@@ -464,20 +464,36 @@ class ReadAlongRepository(
           val decodeStart = (start - 5_000).coerceAtLeast(0)
           val pcm = decoder.decode(track, decodeStart, minOf(30_000, durationMs - decodeStart))
           val decoded = android.os.SystemClock.elapsedRealtime()
-          val words = speech.transcribe(models.file, pcm).map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
-          val recognized = android.os.SystemClock.elapsedRealtime()
-          val activeMatcher = matcher
-          val hint = selectedHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
-          val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
+          var matchedCount = 0
+          speech.transcribeProgressive(models.file, pcm, (positionMs - decodeStart).coerceAtLeast(0)) { partial ->
+            ensureActive()
+            if (valid()) {
+              val words = partial.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
+              val activeMatcher = matcher
+              val hint = selectedHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
+              val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
+              if (valid()) {
+                val lines = matched.filter { it.id !in timings }
+                withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines, complete = false) }
+                if (valid()) {
+                  lines.forEach { timings[it.id] = it }
+                  matchedCount = maxOf(matchedCount, matched.size)
+                  if (lines.isNotEmpty()) {
+                    mutable.update { it.copy(phase = ReadAlongPhase.READY, preparingAhead = true, message = null) }
+                    publishLines()
+                    Log.d("ReadAlongPerf", "usableUpdateMs=${android.os.SystemClock.elapsedRealtime()-began} added=${lines.size}")
+                  }
+                }
+              }
+            }
+          }
           if (!valid()) return@launch
-          val lines = matched.filter { it.id !in timings }
-          withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines) }
+          withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), emptyList()) }
           if (!valid()) return@launch
-          lines.forEach { timings[it.id] = it }
-          Log.d("ReadAlongPerf", "decodeMs=${decoded-began} recognitionMs=${recognized-decoded} matchMs=${android.os.SystemClock.elapsedRealtime()-recognized} matched=${matched.size} ahead=$ahead")
+          Log.d("ReadAlongPerf", "decodeMs=${decoded-began} progressiveMs=${android.os.SystemClock.elapsedRealtime()-decoded} matched=$matchedCount ahead=$ahead")
           mutable.update { it.copy(alignmentAttempted = true, phase = ReadAlongPhase.READY, preparingAhead = false,
             analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
-            message = if (!ahead && matched.isEmpty()) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
+            message = if (!ahead && matchedCount == 0) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           publishLines()
           delay(100)
         }

@@ -30,11 +30,27 @@ class NarrationMatcher(private val sentences: List<BookSentence>) {
     val best = candidates.map { center -> alignWindow(words, (center - 80).coerceAtLeast(0), (center + words.size + 120).coerceAtMost(tokens.size), preferred) }
       .maxByOrNull { matches -> matches.size * 10_000 - (hintSentence?.let { hint -> matches.firstOrNull()?.let { kotlin.math.abs(tokens[it.second].sentence - hint) } } ?: 0) } ?: return emptyList()
     if (best.size < 6) return emptyList()
-    return best.groupBy { tokens[it.second].sentence }.mapNotNull { (sentenceIndex, pairs) ->
+    val groups = best.groupBy { tokens[it.second].sentence }
+    fun complete(index: Int, pairs: List<Pair<Int, Int>>): Boolean {
+      val count = ReadAlongText.tokens(sentences[index].text).size
+      val covered = pairs.map { tokens[it.second].within }.toSet()
+      return count >= 3 && 0 in covered && count - 1 in covered && covered.size.toDouble() / count >= 0.72
+    }
+    val confident = groups.filter { (index, pairs) -> complete(index, pairs) }.keys
+    return groups.mapNotNull { (sentenceIndex, pairs) ->
       val sentenceTokens = ReadAlongText.tokens(sentences[sentenceIndex].text)
       val covered = pairs.map { tokens[it.second].within }.toSet()
       // Require the first word and most of the sentence; partial boundaries stay untimed.
-      if (sentenceTokens.size < 3 || 0 !in covered || covered.size.toDouble() / sentenceTokens.size < 0.72 || sentenceTokens.lastIndex !in covered) return@mapNotNull null
+      val anchoredShort = sentenceTokens.size in 1..2 && covered.size == sentenceTokens.size && confident.any { neighbor ->
+        if (kotlin.math.abs(neighbor - sentenceIndex) != 1 || sentences[neighbor].chapterIndex != sentences[sentenceIndex].chapterIndex) false
+        else {
+          val adjacent = groups.getValue(neighbor)
+          val before = if (neighbor < sentenceIndex) adjacent.last().first else pairs.last().first
+          val after = if (neighbor < sentenceIndex) pairs.first().first else adjacent.first().first
+          after - before in 1..3 && words[after].startMs - words[before].endMs in -500L..2000L
+        }
+      }
+      if (!complete(sentenceIndex, pairs) && !anchoredShort) return@mapNotNull null
       val first = words[pairs.first().first]
       val last = words[pairs.last().first]
       if (last.endMs <= first.startMs) return@mapNotNull null
@@ -42,7 +58,7 @@ class NarrationMatcher(private val sentences: List<BookSentence>) {
     }.sortedBy { it.startTimeMs }
   }
 
-  private fun alignWindow(words: List<SpeechWord>, from: Int, to: Int, preferred: Int?): List<Pair<Int, Int>> {
+  private fun alignWindow(words: List<SpeechWord>, from: Int, to: Int, preferred: Int?, depth: Int = 0): List<Pair<Int, Int>> {
     if (from >= to) return emptyList()
     val width = to - from + 1
     val scores = Array(words.size + 1) { IntArray(width) }
@@ -63,7 +79,18 @@ class NarrationMatcher(private val sentences: List<BookSentence>) {
         else -> j--
       }
     }
-    return pairs.asReversed()
+    val core = pairs.asReversed()
+    if (core.size < 6 || depth >= 3) return core
+    val first = core.first(); val last = core.last()
+    // A long spoken-only introduction/gap can reset local alignment. Recover ordered evidence on
+    // either side of the best island instead of discarding it or timing the unspoken book gap.
+    val prefix = if (first.first >= 6 && first.second - from >= 6)
+      alignWindow(words.subList(0, first.first), from, first.second, preferred, depth + 1).takeIf { it.size >= 6 }.orEmpty() else emptyList()
+    val suffixStart = last.first + 1
+    val suffix = if (words.size - suffixStart >= 6 && to - last.second - 1 >= 6)
+      alignWindow(words.subList(suffixStart, words.size), last.second + 1, to, preferred, depth + 1)
+        .takeIf { it.size >= 6 }.orEmpty().map { it.first + suffixStart to it.second } else emptyList()
+    return prefix + core + suffix
   }
 
   private fun key(a: String, b: String, c: String) = "$a\u0001$b\u0001$c"

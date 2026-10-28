@@ -105,6 +105,10 @@ private fun ReaderParagraphText(
   var layout by remember(paragraph.text) { mutableStateOf<TextLayoutResult?>(null) }
   val tap by rememberUpdatedState(onTap)
   val longPress by rememberUpdatedState(onLongPress)
+  var accessibilityPage by rememberSaveable(paragraph.key) { mutableStateOf<Int?>(null) }
+  val preferred = selectedId ?: activeId
+  val lastActionPage = (paragraph.ranges.size - 1) / 14
+  val actionPage = (accessibilityPage ?: (paragraph.ranges.indexOfFirst { it.sentenceId == preferred }.coerceAtLeast(0) / 14)).coerceIn(0, lastActionPage)
   val colors = MaterialTheme.colorScheme
   fun sentenceAt(point: Offset): Long? {
     val result = layout ?: return null
@@ -134,12 +138,17 @@ private fun ReaderParagraphText(
       detectTapGestures(onTap = { point -> sentenceAt(point)?.let { tap(it) } },
         onLongPress = { point -> sentenceAt(point)?.let { longPress(it) } })
     }.semantics {
-      customActions = paragraph.ranges.flatMap { range ->
-        val label = paragraph.text.substring(range.start, range.end)
+      // Stay below Compose's 32 reserved IDs, including both page-navigation actions.
+      // Every sentence remains reachable without overflowing the platform action budget.
+      customActions = paragraph.ranges.drop(actionPage * 14).take(14).flatMapIndexed { index, range ->
+        val label = "${actionPage * 14 + index + 1}. ${paragraph.text.substring(range.start, range.end)}"
         listOf(
           CustomAccessibilityAction(if (editing) "Select: $label" else "Seek to: $label") { tap(range.sentenceId) },
           CustomAccessibilityAction("Correct sync: $label") { longPress(range.sentenceId); true },
         )
+      } + buildList {
+        if (actionPage > 0) add(CustomAccessibilityAction("Previous sentence actions") { accessibilityPage = actionPage - 1; true })
+        if (actionPage < lastActionPage) add(CustomAccessibilityAction("More sentence actions") { accessibilityPage = actionPage + 1; true })
       }
       if (paragraph.ranges.size == 1) {
         val id = paragraph.ranges.single().sentenceId

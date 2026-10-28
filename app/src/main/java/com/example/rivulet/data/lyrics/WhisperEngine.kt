@@ -12,12 +12,17 @@ import kotlin.coroutines.resumeWithException
 
 fun interface SpeechRecognizer {
   suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord>
+  suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> {
+    val words = transcribe(model, pcm)
+    onPartial(words)
+    return words
+  }
   fun release() {}
   fun close() {}
 }
 
 /** All model/context operations run on one worker. Only the atomic native abort is cross-thread. */
-class WhisperEngine(private val idleMillis: Long = 60_000) : SpeechRecognizer {
+class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveContext: Boolean = true) : SpeechRecognizer {
   private val lock = Any()
   private val worker = ScheduledThreadPoolExecutor(1) { runnable ->
     Thread(runnable, "ReadAlongSpeech").apply { isDaemon = true }
@@ -32,7 +37,7 @@ class WhisperEngine(private val idleMillis: Long = 60_000) : SpeechRecognizer {
   @Volatile var contextReleases = 0
     private set
   private external fun nativeCreate(path: String): Long
-  private external fun nativeTranscribe(handle: Long, pcm: FloatArray): Array<SpeechWord>
+  private external fun nativeTranscribe(handle: Long, pcm: FloatArray, adaptiveContext: Boolean): Array<SpeechWord>
   private external fun nativeResetCancel(handle: Long)
   private external fun nativeCancel(handle: Long)
   private external fun nativeDestroy(handle: Long)
@@ -74,7 +79,7 @@ class WhisperEngine(private val idleMillis: Long = 60_000) : SpeechRecognizer {
             return@execute
           }
           val began = android.os.SystemClock.elapsedRealtime()
-          val words = nativeTranscribe(handle, pcm).toList()
+          val words = nativeTranscribe(handle, pcm, adaptiveContext).toList()
           Log.d("ReadAlongPerf", "nativeRecognitionMs=${android.os.SystemClock.elapsedRealtime()-began} samples=${pcm.size}")
           if (continuation.isActive) continuation.resume(words)
         } catch (error: Throwable) {
@@ -90,6 +95,16 @@ class WhisperEngine(private val idleMillis: Long = 60_000) : SpeechRecognizer {
         }
       }
     }
+  }
+
+  override suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> {
+    val completed = LinkedHashMap<SpeechBatch, List<SpeechWord>>()
+    for (batch in SpeechBatches.plan(pcm.size, focusMs)) {
+      val words = transcribe(model, if (batch.startSample == 0 && batch.endSample == pcm.size) pcm else pcm.copyOfRange(batch.startSample, batch.endSample))
+      completed[batch] = words.map { it.copy(startMs = it.startMs + batch.startMs, endMs = it.endMs + batch.startMs) }
+      onPartial(SpeechBatches.merge(completed))
+    }
+    return SpeechBatches.merge(completed)
   }
 
   // Called on the worker only; never frees an in-use native pointer.
