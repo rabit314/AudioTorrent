@@ -50,9 +50,9 @@ class SyncCorrectionUiTest {
     val restoration = StateRestorationTester(compose)
     restoration.setContent { MaterialTheme {
       PlayerLayout(PlaybackUi(infoHash = "sync-ui", fileIndex = 0, hasMedia = true, durationMs = 11_000, positionMs = 2500, speed = 1.5f),
-        "Correction fixture", "Paused at 1.5×", null, {}, {}, {}, {}, {}, { playClicks++ }, {}, {}, { seeks += it }, {}, {}) { modifier ->
+        "Correction fixture", "Paused at 1.5×", null, {}, {}, {}, {}, {}, { playClicks++ }, {}, {}, { seeks += it }, {}, {}) { modifier, visible ->
         LyricsView(r, emptyList(), "Fixture", { seeks += it.startTimeMs }, modifier,
-          onSyncNow = { r.syncNow(SyncReference(it, 8750, 11_000)) })
+          onSyncNow = { r.syncNow(SyncReference(it, 8750, 11_000)) }, isVisible = visible)
       }
     } }
     compose.onNodeWithTag("player-text").performClick()
@@ -102,8 +102,8 @@ class SyncCorrectionUiTest {
       CompositionLocalProvider(LocalDensity provides Density(base.density * if (width > 400) 0.5f else 1f, font)) {
         MaterialTheme {
           PlayerLayout(PlaybackUi(hasMedia = true, durationMs = 11_000), "Correction fixture", "Chapter one", null,
-            {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, Modifier.requiredSize(width.dp, height.dp).consumeWindowInsets(WindowInsets.safeDrawing)) { modifier ->
-            LyricsView(r, emptyList(), "Fixture", {}, modifier)
+            {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, Modifier.requiredSize(width.dp, height.dp).consumeWindowInsets(WindowInsets.safeDrawing)) { modifier, visible ->
+            LyricsView(r, emptyList(), "Fixture", {}, modifier, isVisible = visible)
           }
         }
       }

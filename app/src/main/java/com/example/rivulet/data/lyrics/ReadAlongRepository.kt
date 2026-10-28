@@ -122,7 +122,7 @@ class ReadAlongRepository(
           timings = LrcParser.detectAndParse(book.book.chapters.joinToString("\n") { it.text }).associateByTo(LinkedHashMap()) { it.id }
           sentences = timings.values.map { BookSentence(it.id, 1, book.book.title, it.text) }
         }
-        val lines = sentences.map { sentence -> timings[sentence.id] ?: TimedLine(sentence.id, -1, -1, sentence.text) }
+        val lines = sentences.map { it.withTiming(timings[it.id]) }
         mutable.value = ReadAlongState(track = track, bookId = book.id, title = book.book.title, isbn = book.book.isbn,
           chapters = book.book.chapters, offsetMs = saved.second, phase = ReadAlongPhase.READY, source = book.source, trackIndices = indices,
           lines = lines, matchedSentences = lines.count { it.isTimed }, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, saved.second))
@@ -661,7 +661,7 @@ class ReadAlongRepository(
           selectedHint = index; chapterHint = sentences[index].chapterIndex
         }
         val value = ReadAlongTimeline.calibration(line, reference.positionMs)
-        val lines = sentences.map { timings[it.id] ?: TimedLine(it.id, -1, -1, it.text) }
+        val lines = sentences.map { it.withTiming(timings[it.id]) }
         val recoveredMatching = mutable.value.recoveryLabel in setOf("Retry matching", "Retry model download")
         if (recoveredMatching) recoveryAction = null
         // Playback may have advanced during matching; align this historical reference without seeking.
@@ -725,7 +725,7 @@ class ReadAlongRepository(
   }
 
   private fun publishLines() {
-    val lines = sentences.map { sentence -> timings[sentence.id] ?: TimedLine(sentence.id, -1, -1, sentence.text) }
+    val lines = sentences.map { it.withTiming(timings[it.id]) }
     mutable.update { it.copy(lines = lines, matchedSentences = lines.count { line -> line.isTimed }, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, it.offsetMs)) }
   }
   private fun current(track: ReadAlongTrack, version: Long) = mutable.value.track == track && generation == version

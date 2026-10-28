@@ -10,7 +10,14 @@ enum class ReadAlongRecovery { RETRY, PICK_FILE }
 
 data class ReadAlongTrack(val infoHash: String, val fileIndex: Int)
 
-data class BookSentence(val id: Long, val chapterIndex: Int, val chapterTitle: String, val text: String)
+data class BookSentence(
+  val id: Long, val chapterIndex: Int, val chapterTitle: String, val text: String,
+  val isParagraphStart: Boolean = false,
+) {
+  /** Rebuilt from source on load; display metadata never changes a saved timing or identity. */
+  fun withTiming(timing: TimedLine?): TimedLine =
+    (timing ?: TimedLine(id, -1, -1, text)).copy(isParagraphStart = isParagraphStart || timing?.isParagraphStart == true)
+}
 
 data class ReadAlongState(
   val track: ReadAlongTrack? = null,
@@ -68,11 +75,16 @@ object ReadAlongText {
     val result = ArrayList<BookSentence>()
     var start = iterator.first()
     var end = iterator.next()
+    var previousTextEnd = 0
     while (end != BreakIterator.DONE) {
-      val text = chapter.text.substring(start, end).trim()
+      val raw = chapter.text.substring(start, end)
+      val text = raw.trim()
       if (text.isNotBlank()) {
         val hash = digest("$identity:${chapter.index}:$start".toByteArray())
-        result += BookSentence(hash.take(15).toLong(16), chapter.index, chapter.title, text)
+        val contentStart = start + raw.indexOfFirst { !it.isWhitespace() }
+        val paragraphStart = result.isEmpty() || Regex("\\r?\\n[\\t \\r]*\\n").containsMatchIn(chapter.text.substring(previousTextEnd, contentStart))
+        result += BookSentence(hash.take(15).toLong(16), chapter.index, chapter.title, text, paragraphStart)
+        previousTextEnd = start + raw.indexOfLast { !it.isWhitespace() } + 1
       }
       start = end
       end = iterator.next()

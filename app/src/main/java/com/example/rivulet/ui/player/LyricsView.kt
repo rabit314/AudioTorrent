@@ -4,8 +4,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +20,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,10 +46,12 @@ fun LyricsView(
   searchAuthor: String = "",
   bookIdentityReady: Boolean = true,
   bookIdentityTrack: ReadAlongTrack? = null,
+  isVisible: Boolean = true,
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
   val textSize by repository.readerPreferences.textSize.collectAsStateWithLifecycle()
-  val list = key(state.track) { rememberLazyListState() }
+  val list = key(state.track, state.bookId, state.source) { rememberLazyListState() }
+  val paragraphs = remember(state.lines, state.source) { readerParagraphs(state.lines, state.source) }
   val dragged by list.interactionSource.collectIsDraggedAsState()
   var following by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
   var followingBeforeCorrection by rememberSaveable(state.track, state.bookId, state.source) { mutableStateOf(true) }
@@ -91,12 +93,12 @@ fun LyricsView(
     following = false
     repository.beginCorrection(sentenceId)
   }
-  DisposableEffect(repository) {
-    repository.setVisible(true)
+  DisposableEffect(repository, isVisible) {
+    repository.setVisible(isVisible)
     onDispose { repository.setVisible(false) }
   }
-  LaunchedEffect(state.track, state.phase, state.bookId, cleanBookTitle, searchAuthor, bookIdentityReady, bookIdentityTrack) {
-    if (bookIdentityReady) repository.ensureBookText(BookIdentity(cleanBookTitle, searchAuthor), selectedTracks, bookIdentityTrack ?: state.track)
+  LaunchedEffect(state.track, state.phase, state.bookId, cleanBookTitle, searchAuthor, bookIdentityReady, bookIdentityTrack, isVisible) {
+    if (bookIdentityReady && isVisible) repository.ensureBookText(BookIdentity(cleanBookTitle, searchAuthor), selectedTracks, bookIdentityTrack ?: state.track)
     if (state.bookId != null && state.phase != ReadAlongPhase.LOADING && !state.searching) showSearch = false
   }
   LaunchedEffect(state.choosingEdition) { if (state.choosingEdition) showSearch = true }
@@ -108,16 +110,19 @@ fun LyricsView(
       handledCorrectionEvent = state.correction.event
     }
   }
-  LaunchedEffect(state.track, state.activeLineIndex, following) {
-    if (following && !state.correction.isEditing && state.activeLineIndex in state.lines.indices) list.animateScrollToItem((state.activeLineIndex - 2).coerceAtLeast(0))
-  }
 
   Column(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-      if (state.correction.isEditing) Text("Correct sync", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 12.dp))
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, itemVerticalAlignment = Alignment.CenterVertically) {
+      if (state.correction.isEditing) Text("Correct sync", style = MaterialTheme.typography.labelLarge)
       if (state.bookId != null && !state.correction.isEditing) TextButton(onClick = { beginCorrection(null) }, modifier = Modifier.testTag("correct-sync")) { Text("Correct sync") }
       Box {
-        TextButton(onClick = { showOptions = true }) { Text("Text options") }
+        TextButton(onClick = { showOptions = true }) {
+          if (state.preparingAhead && state.lines.isNotEmpty()) {
+            CircularProgressIndicator(Modifier.size(12.dp).semantics { contentDescription = "Preparing the next passage" }, strokeWidth = 1.5.dp)
+            Spacer(Modifier.width(6.dp))
+          }
+          Text("Text options")
+        }
         DropdownMenu(showOptions, onDismissRequest = { showOptions = false }) {
           DropdownMenuItem(text = { Text("Text size") }, onClick = { showOptions = false; showTextSize = true })
           DropdownMenuItem(text = { Text(if (state.bookId == null) "Find book text" else "Replace edition") }, onClick = { showOptions = false; findText() })
@@ -131,7 +136,7 @@ fun LyricsView(
         }
       }
     }
-    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
+    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, showAhead = false)
     if (state.correction.isEditing) {
       val correction = state.correction
       Text(correction.message ?: "Select a sentence. Press Sync now when it begins.", style = MaterialTheme.typography.bodySmall)
@@ -157,26 +162,18 @@ fun LyricsView(
       }
     }
     if (!following && !state.correction.isEditing) FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
-    LazyColumn(state = list, modifier = Modifier.fillMaxWidth().weight(1f).testTag("readalong-lines"), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      items(state.lines, key = { it.id }) { line ->
-        val active = state.lines.getOrNull(state.activeLineIndex)?.id == line.id
-        val selected = state.correction.isEditing && state.correction.target?.sentenceId == line.id
-        Column(Modifier.fillMaxWidth().background(
-          if (active) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
-          RoundedCornerShape(12.dp),
-        ).then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp)) else Modifier).combinedClickable(
-          onClick = { if (state.correction.isEditing) repository.selectCorrectionSentence(line.id) else if (line.isTimed) { onSeekToLine(line); following = true } },
-          onLongClick = { beginCorrection(line.id) },
-        ).padding(10.dp)) {
-          Text(line.text, fontSize = (textSize + if (active || selected) 2 else 0).sp, lineHeight = (textSize + 8).sp,
-            fontWeight = if (active || selected) FontWeight.Bold else FontWeight.Medium,
-            color = if (active || selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
-        }
-      }
+    key(state.track, state.bookId, state.source) {
+      FlowingReader(paragraphs, list, textSize, state.lines.getOrNull(state.activeLineIndex)?.id,
+      state.correction.target?.sentenceId.takeIf { state.correction.isEditing }, following, state.correction.isEditing, isVisible,
+      onTap = { id ->
+        val line = state.lines.firstOrNull { it.id == id }
+        if (state.correction.isEditing) { repository.selectCorrectionSentence(id); line != null }
+        else if (line?.isTimed == true) { onSeekToLine(line); following = true; true } else false
+      }, onLongPress = { beginCorrection(it) }, modifier = Modifier.fillMaxWidth().weight(1f))
     }
   }
 
-  if (showSearch) AlertDialog(
+  if (showSearch && isVisible) AlertDialog(
     onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
     text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
       OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -189,7 +186,7 @@ fun LyricsView(
       }
     } }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Done") } },
   )
-  if (showTracks) AlertDialog(
+  if (showTracks && isVisible) AlertDialog(
     onDismissRequest = { showTracks = false }, title = { Text("Attach text to audio tracks") },
     text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(audioFiles, key = { it.index }) { file ->
       Row(verticalAlignment = Alignment.CenterVertically) {
@@ -198,13 +195,13 @@ fun LyricsView(
       }
     } } }, confirmButton = { TextButton(onClick = { repository.updateTrackSelection(selectedTracks); showTracks = false }) { Text("Save") } },
   )
-  if (showChapters && state.canChooseChapter) AlertDialog(
+  if (showChapters && state.canChooseChapter && isVisible) AlertDialog(
     onDismissRequest = { showChapters = false }, title = { Text("Choose a chapter hint") },
     text = { LazyColumn(Modifier.heightIn(max = 380.dp)) { items(state.chapters, key = { it.index }) { chapter ->
       TextButton(onClick = { repository.chooseChapter(chapter); showChapters = false; following = false }, modifier = Modifier.fillMaxWidth()) { Text(chapter.title) }
     } } }, confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
   )
-  if (showAdjustment) AlertDialog(
+  if (showAdjustment && isVisible) AlertDialog(
     onDismissRequest = { showAdjustment = false }, title = { Text("Synchronization") },
     text = { Column {
       Text("Correction: ${state.offsetMs / 1000.0}s")
@@ -222,7 +219,7 @@ fun LyricsView(
       Text("${state.matchedSentences} sentences timed · ${state.source?.displayName ?: "No text"}", style = MaterialTheme.typography.bodySmall)
     } }, confirmButton = { TextButton(onClick = { showAdjustment = false }) { Text("Done") } },
   )
-  if (showTextSize) AlertDialog(
+  if (showTextSize && isVisible) AlertDialog(
     onDismissRequest = { showTextSize = false }, title = { Text("Text size") },
     text = { Column {
       Text("$textSize sp", modifier = Modifier.testTag("reader-text-size"))
@@ -232,7 +229,7 @@ fun LyricsView(
       TextButton(onClick = { repository.readerPreferences.setTextSize(ReaderPreferences.DEFAULT_SIZE) }) { Text("Reset") }
     } }, confirmButton = { TextButton(onClick = { showTextSize = false }) { Text("Done") } },
   )
-  if (showAccess) state.accessUrl?.let { url ->
+  if (showAccess && isVisible) state.accessUrl?.let { url ->
     ZLibraryAccessDialog(url, onDismiss = { showAccess = false }, onReady = { html, loadedUrl ->
       showAccess = false
       repository.resumeSiteAccess(html, loadedUrl, state.track)
@@ -242,7 +239,7 @@ fun LyricsView(
 
 /** One status area for both acquisition and synchronization, including operation-specific recovery. */
 @Composable
-fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> Unit, onDownloadModel: () -> Unit, onOpenAccess: () -> Unit = {}) {
+fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> Unit, onDownloadModel: () -> Unit, onOpenAccess: () -> Unit = {}, showAhead: Boolean = true) {
   Column(Modifier.fillMaxWidth()) {
     state.progressLabel?.let { label ->
       LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("readalong-progress"))
@@ -255,7 +252,7 @@ fun ReadAlongStatus(state: ReadAlongState, onRetry: () -> Unit, onImport: () -> 
       TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
     }
     if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
-    if (state.preparingAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall)
+    if (state.preparingAhead && showAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall)
     if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
   }
 }

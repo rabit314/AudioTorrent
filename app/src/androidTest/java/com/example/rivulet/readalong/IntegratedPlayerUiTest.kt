@@ -38,7 +38,7 @@ class IntegratedPlayerUiTest {
   @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
   private val playing = PlaybackUi(infoHash = "fixture", fileIndex = 0, hasMedia = true, hasNext = true, hasPrevious = true, durationMs = 80_000, positionMs = 20_100)
 
-  @Composable private fun player(state: PlaybackUi = playing, modifier: Modifier = Modifier, onSeek: (Long) -> Unit = {}, text: @Composable (Modifier) -> Unit = {}) {
+  @Composable private fun player(state: PlaybackUi = playing, modifier: Modifier = Modifier, onSeek: (Long) -> Unit = {}, text: @Composable (Modifier, Boolean) -> Unit = { _, _ -> }) {
     PlayerLayout(state, "An audiobook with a deliberately long title that should wrap elegantly", "Chapter twenty · Fixture author", "Chapter 20 of 80",
       {}, {}, {}, {}, {}, {}, {}, {}, onSeek, {}, {}, modifier, text)
   }
@@ -88,7 +88,7 @@ class IntegratedPlayerUiTest {
       compose.runOnUiThread { repository.activate(ReadAlongTrack("fixture", 0)); repository.importBytes(lrc.toByteArray(), "a.lrc", "text/plain", setOf(0, 1)) }
       compose.waitUntil(10_000) { repository.state.value.bookId != null }
       compose.runOnUiThread { repository.playback(20_100, 80_000) }
-      restoration.setContent { MaterialTheme { player(playback) { LyricsView(repository, emptyList(), "Fixture", { repository.playback(it.startTimeMs, 80_000) }, it) } } }
+      restoration.setContent { MaterialTheme { player(playback) { modifier, visible -> LyricsView(repository, emptyList(), "Fixture", { repository.playback(it.startTimeMs, 80_000) }, modifier, isVisible = visible) } } }
       compose.onNodeWithTag("player-text").performClick()
       compose.onNodeWithText("Public fixture sentence 20.").assertIsDisplayed()
       val controls = compose.onNodeWithTag("player-seek").fetchSemanticsNode().boundsInRoot
@@ -96,7 +96,7 @@ class IntegratedPlayerUiTest {
       compose.onNodeWithText("Follow narration").assertIsDisplayed()
       val before = compose.onNodeWithTag("readalong-lines").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()
       compose.onNodeWithTag("player-cover").performClick()
-      compose.onNodeWithTag("readalong-lines").assertDoesNotExist()
+      compose.onNodeWithTag("readalong-lines").assertIsNotDisplayed()
       compose.onNodeWithTag("player-text").performClick()
       compose.onNodeWithText("Follow narration").assertIsDisplayed()
       val after = compose.onNodeWithTag("readalong-lines").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()

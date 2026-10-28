@@ -52,12 +52,12 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
       if (current.infoHash == state.infoHash && current.fileIndex == state.fileIndex) container.playback.seekTo(position)
     },
     onSpeed = { showSpeedDialog = true }, onBoost = { container.playback.toggleVoiceBoost() }, modifier = modifier,
-  ) { readerModifier ->
+  ) { readerModifier, readerVisible ->
     LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
       cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier,
       onSyncNow = { container.playback.syncReadAlongNow(it) }, searchAuthor = identity.author,
       bookIdentityReady = file != null,
-      bookIdentityTrack = state.infoHash?.let { com.example.rivulet.data.lyrics.ReadAlongTrack(it, state.fileIndex) })
+      bookIdentityTrack = state.infoHash?.let { com.example.rivulet.data.lyrics.ReadAlongTrack(it, state.fileIndex) }, isVisible = readerVisible)
   }
   if (showSpeedDialog) AlertDialog(
     onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },

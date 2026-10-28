@@ -44,7 +44,7 @@ class ReaderPreferencesUiTest {
       }
       val layouts = mutableListOf<TextLayoutResult>()
       compose.onNodeWithText("Public sentence number 20.").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-      assertEquals(20.sp, layouts.single().layoutInput.style.fontSize)
+      assertEquals(18.sp, layouts.single().layoutInput.style.fontSize)
       compose.onNodeWithText("Text options").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()
       compose.onNodeWithTag("reader-text-size").assertTextEquals("18 sp")
       compose.onNodeWithTag("reader-text-size-slider").performSemanticsAction(SemanticsActions.SetProgress) { it(22f) }
@@ -57,7 +57,7 @@ class ReaderPreferencesUiTest {
       compose.runOnUiThread { fontScale = 1.3f }
       layouts.clear()
       compose.onNodeWithText("Public sentence number 20.").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-      assertEquals(24.sp, layouts.single().layoutInput.style.fontSize)
+      assertEquals(22.sp, layouts.single().layoutInput.style.fontSize)
       assertEquals(1.3f, layouts.single().layoutInput.density.fontScale)
       assertEquals(20, r.state.value.activeLineIndex)
       compose.onNodeWithText("Text options").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()

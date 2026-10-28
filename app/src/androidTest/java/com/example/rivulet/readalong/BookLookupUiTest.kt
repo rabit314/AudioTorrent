@@ -33,7 +33,7 @@ class BookLookupUiTest {
       compose.waitUntil(5000) { repo.state.value.phase == ReadAlongPhase.EMPTY }
       compose.setContent { MaterialTheme {
         PlayerLayout(PlaybackUi(infoHash = "buffer", fileIndex = 2, hasMedia = true, isBuffering = true), title, "", null,
-          {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) { LyricsView(repo, emptyList(), title, {}, it) }
+          {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) { modifier, visible -> LyricsView(repo, emptyList(), title, {}, modifier, isVisible = visible) }
       } }
       compose.onNodeWithTag("player-text").performClick()
       compose.onNodeWithText("Buffering from peers…").assertIsDisplayed()
