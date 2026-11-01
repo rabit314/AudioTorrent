@@ -42,6 +42,7 @@ import org.libtorrent4j.alerts.Alert
 import org.libtorrent4j.alerts.AlertType
 import org.libtorrent4j.alerts.MetadataReceivedAlert
 import org.libtorrent4j.alerts.TorrentAlert
+import org.libtorrent4j.alerts.UrlSeedAlert
 import org.libtorrent4j.swig.torrent_flags_t
 
 /**
@@ -53,6 +54,7 @@ class TorrentEngine(
   context: Context,
   val database: TorrentDatabase = TorrentDatabase(context),
   private val streamIdleTimeoutMs: Long = 60_000L,
+  private val publicWebseeds: PublicWebseedBridge = PublicWebseedBridge(),
 ) : AlertListener {
 
   private val appContext = context.applicationContext
@@ -63,11 +65,15 @@ class TorrentEngine(
   private val catalogMetadata = BookCatalogMetadata(appContext)
 
   private val handles = ConcurrentHashMap<String, TorrentHandle>()
+  private val removedHashes = ConcurrentHashMap.newKeySet<String>()
   private val errors = ConcurrentHashMap<String, String>()
   private val coverCache = ConcurrentHashMap<String, String>()
   private val ready = AtomicBoolean(false)
   private val addLock = Mutex()
   private val streamLock = Mutex()
+  // torrentFile()/files() borrow native storage. Removal and stop must wait for readers.
+  private val metadataLock = Any()
+  @Volatile private var stopping = false
 
   @Volatile private var activeStream: StreamSession? = null
   @Volatile private var selectedStreamKey: Pair<String, Int>? = null
@@ -95,10 +101,12 @@ class TorrentEngine(
           setEnableLsd(true)
           setMaxMetadataSize(16 * 1024 * 1024)
         }
-      session.start(SessionParams(settings))
-      session.addListener(this@TorrentEngine)
-
-      ready.set(true)
+      synchronized(metadataLock) {
+        if (stopping) return
+        session.start(SessionParams(settings))
+        session.addListener(this@TorrentEngine)
+        ready.set(true)
+      }
       Log.i(TAG, "Torrent engine started")
 
       // Restore saved torrents from database
@@ -111,6 +119,8 @@ class TorrentEngine(
         // Adaptive polling: 1000ms when actively downloading, 3000ms when idle to save CPU/battery
         delay(if (hasActivity) 1000L else 3000L)
       }
+    } catch (cancelled: CancellationException) {
+      throw cancelled
     } catch (t: Throwable) {
       Log.e(TAG, "Torrent session failed", t)
       errors[SESSION_KEY] = t.message ?: "Torrent engine failed to start"
@@ -134,6 +144,7 @@ class TorrentEngine(
           val handle = awaitHandle(info.infoHash())
           if (handle != null && handle.isValid) {
             handles[hash] = handle
+            configurePublicWebseed(hash, handle, info)
             Log.i(TAG, "Restored torrent $hash: ${info.name()}")
           }
         } else if (!st.magnetUri.isNullOrBlank()) {
@@ -201,7 +212,8 @@ class TorrentEngine(
     }
   }
 
-  suspend fun addTorrentFile(bytes: ByteArray, displayName: String? = null): Result<String> =
+  suspend fun addTorrentFile(bytes: ByteArray, displayName: String? = null, coverUrl: String? = null,
+    catalogBook: com.example.rivulet.data.CatalogBook? = null): Result<String> =
     withContext(Dispatchers.IO) {
       addLock.withLock {
         runCatching {
@@ -209,6 +221,7 @@ class TorrentEngine(
           val info = TorrentInfo(bytes)
           val hash = info.infoHash().toHex()
           val name = displayName?.takeIf { it.isNotBlank() } ?: info.name()
+          val resolved = catalogBook?.resolve((0 until info.numFiles()).map { it to info.files().filePath(it) })
           database.saveTorrent(
             SavedTorrent(
               infoHash = hash,
@@ -216,8 +229,11 @@ class TorrentEngine(
               addedAt = System.currentTimeMillis(),
               magnetUri = null,
               torrentBytes = bytes,
+              coverUrl = coverUrl,
             )
           )
+          if (resolved != null) catalogMetadata.saveBook(hash, resolved)
+          if (coverUrl != null) { coverCache[hash] = coverUrl; database.updateTorrentCover(hash, coverUrl) }
           addTorrentInfo(info)
         }
       }
@@ -225,8 +241,12 @@ class TorrentEngine(
 
   private suspend fun addTorrentInfo(info: TorrentInfo): String {
     val hash = info.infoHash().toHex()
+    removedHashes.remove(hash)
     val existing = getLiveHandle(hash)
-    if (existing != null && existing.isValid) return hash
+    if (existing != null && existing.isValid) {
+      configurePublicWebseed(hash, existing, info)
+      return hash
+    }
 
     val wantedMap = database.getFilePriorities(hash)
     val priorities = Array(info.numFiles()) { idx ->
@@ -236,6 +256,7 @@ class TorrentEngine(
 
     val handle = awaitHandle(info.infoHash()) ?: error("The torrent could not be added.")
     handles[hash] = handle
+    configurePublicWebseed(hash, handle, info)
     refresh(logStats = true)
     return hash
   }
@@ -249,7 +270,18 @@ class TorrentEngine(
     return null
   }
 
+  private fun configurePublicWebseed(hash: String, handle: TorrentHandle, info: TorrentInfo) {
+    val origins = catalogMetadata.book(hash)?.webSeeds.orEmpty()
+    if (origins.isEmpty()) return
+    val files = (0 until info.numFiles()).associate { info.files().filePath(it) to info.files().fileSize(it) }
+    val local = publicWebseeds.register(hash, origins, files)
+    handle.urlSeeds().forEach(handle::removeUrlSeed)
+    handle.addUrlSeed(local)
+    Log.d(TAG, "Public webseed configured: ${handle.urlSeeds().size} URLs")
+  }
+
   private fun getLiveHandle(hash: String): TorrentHandle? {
+    if (stopping || hash in removedHashes) return null
     val sha1 = runCatching { Sha1Hash.parseHex(hash) }.getOrNull()
     if (sha1 != null) {
       val live = runCatching { session.find(sha1) }.getOrNull()
@@ -262,8 +294,10 @@ class TorrentEngine(
   }
 
   private suspend fun ensureReady() {
+    check(!stopping) { "Torrent engine has stopped." }
     if (ready.get()) return
     repeat(100) {
+      check(!stopping) { "Torrent engine has stopped." }
       if (ready.get()) return
       delay(100)
     }
@@ -298,7 +332,7 @@ class TorrentEngine(
     }
   }
 
-  private fun prepareStreamLocked(hash: String, fileIndex: Int): StreamSession {
+  private fun prepareStreamLocked(hash: String, fileIndex: Int): StreamSession = synchronized(metadataLock) {
     val handle = getLiveHandle(hash) ?: error("Torrent not found.")
     val info = handle.torrentFile() ?: error("Metadata is not available yet.")
     val storage = info.files()
@@ -410,20 +444,21 @@ class TorrentEngine(
   // Offline Downloads & Management
   // ---------------------------------------------------------------------------------------------
 
-  fun setFileDownloadWanted(hash: String, fileIndex: Int, wanted: Boolean) {
+  fun setFileDownloadWanted(hash: String, fileIndex: Int, wanted: Boolean): Unit = synchronized(metadataLock) {
     val handle = getLiveHandle(hash) ?: return
     handle.filePriority(fileIndex, if (wanted) Priority.DEFAULT else Priority.IGNORE)
     database.saveFileWanted(hash, fileIndex, wanted)
     refresh(logStats = true)
   }
 
-  fun setTorrentDownloadWanted(hash: String, wanted: Boolean) {
+  fun setTorrentDownloadWanted(hash: String, wanted: Boolean): Unit = synchronized(metadataLock) {
     val handle = getLiveHandle(hash) ?: return
     val info = handle.torrentFile() ?: return
     val count = info.numFiles()
+    val catalogIndices = catalogMetadata.book(hash)?.chapters?.map { it.fileIndex }?.toSet()
     for (i in 0 until count) {
       val isAudio = isAudioFile(info.files().filePath(i))
-      if (isAudio) {
+      if (isAudio && (catalogIndices == null || i in catalogIndices)) {
         handle.filePriority(i, if (wanted) Priority.DEFAULT else Priority.IGNORE)
         database.saveFileWanted(hash, i, wanted)
       }
@@ -431,7 +466,7 @@ class TorrentEngine(
     refresh(logStats = true)
   }
 
-  fun findCompanionTextFile(hash: String): Pair<Int, String>? {
+  fun findCompanionTextFile(hash: String): Pair<Int, String>? = synchronized(metadataLock) {
     val handle = getLiveHandle(hash) ?: return null
     val info = handle.torrentFile() ?: return null
     val count = info.numFiles()
@@ -448,26 +483,27 @@ class TorrentEngine(
 
   suspend fun removeTorrent(hash: String, deleteFiles: Boolean) = withContext(Dispatchers.IO) {
     addLock.withLock {
-      val handle = handles.remove(hash)
-      val info = handle?.let { runCatching { it.torrentFile() }.getOrNull() }
-      val savePath = handle?.let { runCatching { it.savePath() }.getOrNull() }
-      // The native file storage is borrowed from the handle and dies on session.remove.
-      val paths = if (deleteFiles && info != null) {
-        val storage = info.files()
-        (0 until storage.numFiles()).map { storage.filePath(it) }
-      } else emptyList()
-
-      streamLock.withLock {
+      val (savePath, paths) = streamLock.withLock {
         if (activeStream?.infoHash == hash) {
           activeStream?.close()
           activeStream = null
         }
-      }
-      if (handle != null && handle.isValid) {
-        runCatching { session.remove(handle) }
+        synchronized(metadataLock) {
+          removedHashes.add(hash)
+          val handle = handles.remove(hash)
+          val info = handle?.let { runCatching { it.torrentFile() }.getOrNull() }
+          val savePath = handle?.let { runCatching { it.savePath() }.getOrNull() }
+          val paths = if (deleteFiles && info != null) {
+            val storage = info.files()
+            (0 until storage.numFiles()).map { storage.filePath(it) }
+          } else emptyList()
+          if (handle != null && handle.isValid) runCatching { session.remove(handle) }
+          savePath to paths
+        }
       }
       database.deleteTorrent(hash)
       catalogMetadata.remove(hash)
+      publicWebseeds.remove(hash)
 
       if (deleteFiles && savePath != null) {
         val root = File(savePath)
@@ -490,9 +526,16 @@ class TorrentEngine(
   fun find(hash: String): TorrentUi? = _torrents.value.firstOrNull { it.infoHash == hash }
 
   fun shutdown() {
-    activeStream?.close()
-    activeStream = null
     scope.cancel()
+    synchronized(metadataLock) {
+      if (stopping) return
+      stopping = true
+      activeStream?.close()
+      activeStream = null
+      handles.clear()
+    }
+    publicWebseeds.close()
+    // stop() joins the alert thread, which also uses metadataLock.
     runCatching { session.stop() }
   }
 
@@ -500,7 +543,8 @@ class TorrentEngine(
   // State
   // ---------------------------------------------------------------------------------------------
 
-  private fun refresh(logStats: Boolean = false) {
+  private fun refresh(logStats: Boolean = false): Unit = synchronized(metadataLock) {
+    if (stopping) return
     val list = ArrayList<TorrentUi>()
     val currentHashes = HashSet(handles.keys)
     for (hash in currentHashes) {
@@ -511,8 +555,13 @@ class TorrentEngine(
         val status = handle.status(true)
         val info = handle.torrentFile()
         val files = if (info != null) readFiles(hash, handle, info) else emptyList()
-        val name =
-          info?.name()?.takeIf { it.isNotBlank() }
+        val catalogBook = catalogMetadata.book(hash)
+        val chapterIndices = catalogBook?.chapters?.map { it.fileIndex }?.toSet()
+        val selectedFiles = files.filter { chapterIndices != null && it.index in chapterIndices }
+        val catalogTotal = selectedFiles.sumOf { it.size }
+        val catalogDone = selectedFiles.sumOf { it.downloadedBytes }
+        val name = catalogBook?.title?.takeIf { it.isNotBlank() }
+          ?: info?.name()?.takeIf { it.isNotBlank() }
             ?: status.name().takeIf { it.isNotBlank() }
             ?: hash
 
@@ -531,18 +580,19 @@ class TorrentEngine(
             infoHash = hash,
             name = name,
             state = stateLabel(status.state()),
-            progress = status.progress().coerceIn(0f, 1f),
+            progress = if (catalogTotal > 0) (catalogDone.toFloat() / catalogTotal).coerceIn(0f, 1f) else status.progress().coerceIn(0f, 1f),
             downloadRate = downRate,
             uploadRate = status.uploadRate().toLong(),
             peers = peers,
             seeds = seeds,
-            totalBytes = info?.totalSize() ?: status.total(),
-            doneBytes = status.totalDone(),
+            totalBytes = if (catalogBook != null) catalogTotal else info?.totalSize() ?: status.total(),
+            doneBytes = if (catalogBook != null) catalogDone else status.totalDone(),
             hasMetadata = info != null,
             files = files,
             error = errors[hash],
             coverUrl = coverUrl,
             catalogTitle = catalogMetadata.title(hash),
+            catalogBook = catalogBook,
           )
         )
       } catch (t: Throwable) {
@@ -601,45 +651,56 @@ class TorrentEngine(
       AlertType.TORRENT_ERROR.swig(),
       AlertType.FILE_ERROR.swig(),
       AlertType.TORRENT_FINISHED.swig(),
+      AlertType.URL_SEED.swig(),
     )
 
   override fun alert(alert: Alert<*>) {
-    try {
-      when (alert.type()) {
-        AlertType.ADD_TORRENT -> {
-          val alertHandle = (alert as? TorrentAlert<*>)?.handle() ?: return
-          val sha1 = runCatching { alertHandle.infoHash() }.getOrNull() ?: return
-          val hash = sha1.toHex()
-          val live = runCatching { session.find(sha1) }.getOrNull()
-          if (live != null && live.isValid) {
-            handles[hash] = live
+    synchronized(metadataLock) {
+      if (stopping) return
+      try {
+        when (alert.type()) {
+          AlertType.URL_SEED -> {
+            val seed = alert as? UrlSeedAlert ?: return
+            val host = runCatching { java.net.URI(seed.serverUrl()).host }.getOrNull().orEmpty()
+            Log.w(TAG, "Webseed $host failed: ${seed.error().message}")
           }
-        }
-        AlertType.METADATA_RECEIVED -> {
-          val handle = (alert as? MetadataReceivedAlert)?.handle()
-          if (handle != null && handle.isValid) {
-            val hash = handle.infoHash().toHex()
-            val info = handle.torrentFile()
-            if (info != null) {
-              database.updateTorrentName(hash, info.name())
+          AlertType.ADD_TORRENT -> {
+            val alertHandle = (alert as? TorrentAlert<*>)?.handle() ?: return
+            val sha1 = runCatching { alertHandle.infoHash() }.getOrNull() ?: return
+            val hash = sha1.toHex()
+            if (hash in removedHashes) return
+            val live = runCatching { session.find(sha1) }.getOrNull()
+            if (live != null && live.isValid) {
+              handles[hash] = live
             }
           }
+          AlertType.METADATA_RECEIVED -> {
+            val handle = (alert as? MetadataReceivedAlert)?.handle()
+            if (handle != null && handle.isValid) {
+              val hash = handle.infoHash().toHex()
+              if (hash in removedHashes) return
+              val info = handle.torrentFile()
+              if (info != null) {
+                database.updateTorrentName(hash, info.name())
+              }
+            }
+          }
+          AlertType.METADATA_FAILED -> {
+            val handle = (alert as? TorrentAlert<*>)?.handle()
+            if (handle != null) errors[handle.infoHash().toHex()] = "Metadata download failed."
+          }
+          AlertType.TORRENT_ERROR,
+          AlertType.FILE_ERROR -> {
+            val handle = (alert as? TorrentAlert<*>)?.handle()
+            if (handle != null) errors[handle.infoHash().toHex()] = alert.message()
+          }
+          else -> Unit
         }
-        AlertType.METADATA_FAILED -> {
-          val handle = (alert as? TorrentAlert<*>)?.handle()
-          if (handle != null) errors[handle.infoHash().toHex()] = "Metadata download failed."
-        }
-        AlertType.TORRENT_ERROR,
-        AlertType.FILE_ERROR -> {
-          val handle = (alert as? TorrentAlert<*>)?.handle()
-          if (handle != null) errors[handle.infoHash().toHex()] = alert.message()
-        }
-        else -> Unit
+      } catch (_: Throwable) {
+        // Never let alert handling kill libtorrent's alert thread.
       }
-    } catch (_: Throwable) {
-      // Never let alert handling kill libtorrent's alert thread.
+      scope.launch { refresh(logStats = false) }
     }
-    scope.launch { refresh(logStats = false) }
   }
 
   private companion object {

@@ -28,12 +28,13 @@ class ReadAlongRepository(
   private val decoder: ReadAlongAudioDecoder,
   private val speech: SpeechRecognizer = WhisperEngine(),
   private val models: SpeechModelManager = SpeechModelManager(context),
-  private val library: BookCatalog = ZLibraryClient { url -> android.webkit.CookieManager.getInstance().getCookie(url) },
+  private val library: BookCatalog = GutenbergFirstCatalog(),
 ) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val mutable = MutableStateFlow(ReadAlongState())
   val state = mutable.asStateFlow()
   val readerPreferences = ReaderPreferences(context)
+  private val catalogMetadata = com.example.rivulet.data.BookCatalogMetadata(context)
   private var generation = 0L
   private var loadJob: Job? = null
   private var importJob: Job? = null
@@ -47,7 +48,7 @@ class ReadAlongRepository(
   private var searchResults: List<BookEdition> = emptyList()
   private data class Lookup(val track: ReadAlongTrack, val version: Long, val request: Long,
     val query: String, val title: String, val author: String, var titleOnly: Boolean = false,
-    val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet())
+    val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet(), val provider: TextProvider = TextProvider.AUTOMATIC)
   private data class AutomaticResult(val editions: List<BookEdition>, val message: String?)
   private val automaticAttempts = mutableMapOf<String, AutomaticResult?>()
   private data class Download(val track: ReadAlongTrack, val version: Long, val edition: BookEdition, val indices: Set<Int>)
@@ -175,6 +176,10 @@ class ReadAlongRepository(
     val track = snapshot.track ?: return
     if (track != expectedTrack || !visible || snapshot.bookId != null || snapshot.phase != ReadAlongPhase.EMPTY || snapshot.searching ||
       identity.title.isBlank() || identity.title.equals("Audiobook", true)) return
+    if (catalogMetadata.book(track.infoHash)?.canAutoMatchText == false) {
+      mutable.update { it.copy(lookupMessage = "Automatic narration matching supports English. Choose or import text for this recording.") }
+      return
+    }
     val key = listOf(track.infoHash, selectedTracks.sorted().joinToString(","),
       ReadAlongText.tokens(identity.title).joinToString(" "), ReadAlongText.tokens(identity.author).sorted().joinToString(" ")).joinToString("\n")
     if (automaticAttempts.containsKey(key)) {
@@ -187,15 +192,15 @@ class ReadAlongRepository(
   }
 
   fun searchBooks(query: String, force: Boolean = false, title: String = query, author: String = "",
-    automaticKey: String? = null, selectedTracks: Set<Int> = emptySet()) {
+    automaticKey: String? = null, selectedTracks: Set<Int> = emptySet(), provider: TextProvider = TextProvider.AUTOMATIC) {
     val track = mutable.value.track ?: return
     pendingDownload = null
     fun normalize(value: String) = value.trim().replace(Regex("\\s+"), " ").lowercase(java.util.Locale.ROOT)
     if (query.isBlank()) { mutable.update { it.copy(lookupMessage = "Enter a book title.") }; return }
-    val normalized = listOf(query, title, author).joinToString("\n") { normalize(it) }
+    val normalized = listOf(query, title, author, provider.name).joinToString("\n") { normalize(it) }
     if (!force && searchKey == normalized && searchSucceeded) {
       lookupJob?.cancel()
-      val search = Lookup(track, generation, ++lookupSequence, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks)
+      val search = Lookup(track, generation, ++lookupSequence, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks, provider = provider)
       lookup = search
       clearRecovery()
       finishLookup(search, searchResults)
@@ -203,12 +208,13 @@ class ReadAlongRepository(
     }
     if (!force && searchKey == normalized && lookupJob?.isActive == true && mutable.value.searching) return
     searchKey = normalized; searchSucceeded = false
+    searchResults = emptyList() // Public results merged after browser recovery belong only to this lookup.
     val version = generation
     val request = ++lookupSequence
     lookupJob?.cancel()
     clearRecovery()
     mutable.update { it.copy(searching = true, editions = emptyList(), accessUrl = null, lookupMessage = null, choosingEdition = false) }
-    val search = Lookup(track, version, request, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks)
+    val search = Lookup(track, version, request, query.trim(), title.trim(), author.trim(), automaticKey = automaticKey, selectedTracks = selectedTracks, provider = provider)
     lookup = search
     lookupJob = scope.launch { runLookup(search) }
   }
@@ -217,15 +223,17 @@ class ReadAlongRepository(
 
   private suspend fun runLookup(search: Lookup) {
       try {
-        val results = withContext(Dispatchers.IO) { library.search(if (search.titleOnly) search.title else search.query) }
+        val outcome = withContext(Dispatchers.IO) { library.lookup(BookLookupRequest(if (search.titleOnly) search.title else search.query,
+          search.title, search.author, catalogMetadata.book(search.track.infoHash)?.textSourceUrl.takeIf { search.automaticKey != null }, search.provider)) }
+        val results = outcome.editions
         if (lookupCurrent(search)) {
-          if (shouldBroaden(search, results)) {
+          if (outcome.accessUrl == null && shouldBroaden(search, results)) {
             search.titleOnly = true
             mutable.update { it.copy(lookupMessage = "Trying the book title without the author…") }
             runLookup(search)
             return
           }
-          finishLookup(search, results)
+          finishLookup(search, results, outcome)
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
@@ -234,26 +242,29 @@ class ReadAlongRepository(
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
           if (error !is SiteAccessRequired) offerRecovery(search.track, search.version, "Retry search") {
             searchBooks(search.query, force = true, title = search.title, author = search.author,
-              automaticKey = search.automaticKey, selectedTracks = search.selectedTracks)
+              automaticKey = search.automaticKey, selectedTracks = search.selectedTracks, provider = search.provider)
           }
         }
       }
   }
 
-  private fun finishLookup(search: Lookup, results: List<BookEdition>) {
+  private fun finishLookup(search: Lookup, results: List<BookEdition>, outcome: BookLookupResult = BookLookupResult(results)) {
     if (!lookupCurrent(search)) return
-    searchSucceeded = true
+    searchSucceeded = outcome.complete
     searchResults = BookSearch.rank(results, search.query, search.title, search.author)
-    val message = if (results.isEmpty()) "No editions found. Try a different title or import your ebook."
+    val message = outcome.message ?: if (results.isEmpty()) "No editions found. Try a different title or import your ebook."
       else if (search.automaticKey != null) "Choose the edition that matches your audiobook."
       else if (search.titleOnly) "Results for ${search.title} (title only)." else null
     search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(searchResults, message) }
-    mutable.update { it.copy(searching = false, accessUrl = null, editions = searchResults,
+    mutable.update { it.copy(searching = false, accessUrl = outcome.accessUrl, editions = searchResults,
       choosingEdition = search.automaticKey != null && results.isNotEmpty(), lookupMessage = message) }
     if (search.automaticKey != null) {
       BookSearch.automaticEdition(searchResults, BookIdentity(search.title, search.author))?.let {
         downloadEdition(it, search.selectedTracks)
       }
+    }
+    if (!outcome.complete && outcome.accessUrl == null) offerRecovery(search.track, search.version, "Retry search") {
+      searchBooks(search.query, force = true, title = search.title, author = search.author, provider = search.provider)
     }
   }
 
@@ -308,7 +319,7 @@ class ReadAlongRepository(
     if (expectedTrack != mutable.value.track) return
     val search = lookup ?: return
     if (!lookupCurrent(search)) return
-    val parsed = ZLibraryClient.parseResults(html, url)
+    val parsed = searchResults.filter { it.provider == TextProvider.GUTENBERG } + ZLibraryClient.parseResults(html, url)
     if (shouldBroaden(search, parsed)) {
       search.titleOnly = true
       mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Trying the book title without the author…") }

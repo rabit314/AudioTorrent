@@ -83,7 +83,7 @@ fun TorrentScreen(
   val sortedFiles = remember(torrent?.audioFiles, sortOrder) {
     val list = torrent?.audioFiles ?: emptyList()
     when (sortOrder) {
-      FileSortOrder.TORRENT_ORDER -> list.sortedBy { it.index }
+      FileSortOrder.TORRENT_ORDER -> list
       FileSortOrder.NATURAL_PATH -> list.sortedWith(NATURAL_PATH_COMPARATOR)
       FileSortOrder.SIZE_DESC -> list.sortedByDescending { it.size }
     }
@@ -175,7 +175,7 @@ fun TorrentScreen(
             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(8.dp))
             Text(
-              "Buffering from peers…",
+              "Buffering audio…",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.primary,
             )
@@ -218,7 +218,7 @@ fun TorrentScreen(
               FilterChip(
                 selected = sortOrder == FileSortOrder.TORRENT_ORDER,
                 onClick = { sortOrder = FileSortOrder.TORRENT_ORDER },
-                label = { Text("Torrent Order") },
+                label = { Text(if (torrent.catalogBook != null) "Chapter Order" else "Torrent Order") },
               )
               FilterChip(
                 selected = sortOrder == FileSortOrder.NATURAL_PATH,
@@ -248,7 +248,7 @@ fun TorrentScreen(
               scope.launch {
                 preparing = file.index
                 val queueTracks = sortedFiles.map {
-                  val titleText = if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
+                  val titleText = it.chapterTitle ?: if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
                   QueueTrack(
                     infoHash = infoHash,
                     fileIndex = it.index,

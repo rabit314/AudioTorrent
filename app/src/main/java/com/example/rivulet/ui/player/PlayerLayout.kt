@@ -158,7 +158,7 @@ private fun PlayerControls(
       TextButton(onClick = onSpeed, enabled = state.hasMedia) { Icon(Icons.Default.Speed, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Speed ${state.speed}×") }
       TextButton(onClick = onBoost, enabled = state.hasMedia) { Icon(Icons.Default.GraphicEq, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (state.isVoiceBoost) "Boost on" else "Boost") }
     }
-    if (state.isBuffering) Text("Buffering from peers…", style = MaterialTheme.typography.labelSmall)
+    if (state.isBuffering) Text("Buffering audio…", style = MaterialTheme.typography.labelSmall)
     state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
   }
 }

@@ -37,7 +37,8 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
   val coroutineScope = rememberCoroutineScope()
   val torrent = torrents.firstOrNull { it.infoHash == state.infoHash }
   val file = torrent?.audioFiles?.firstOrNull { it.index == state.fileIndex }
-  val identity = com.example.rivulet.data.lyrics.BookIdentityResolver.resolve(
+  val identity = torrent?.catalogBook?.let { com.example.rivulet.data.lyrics.BookIdentity(it.title, it.author) }
+    ?: com.example.rivulet.data.lyrics.BookIdentityResolver.resolve(
     file?.name ?: state.title, file?.directory, torrent?.name ?: state.subtitle,
     torrent?.catalogTitle, chapterTrack = (torrent?.audioFiles?.size ?: 0) > 1)
   val cleanBook = identity.title

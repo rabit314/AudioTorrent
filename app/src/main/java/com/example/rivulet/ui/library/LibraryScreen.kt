@@ -223,7 +223,7 @@ fun LibraryScreen(
             Icon(Icons.Default.History, contentDescription = "Listening History")
           }
           IconButton(onClick = onOpenAudioBookBay) {
-            Icon(Icons.Default.Search, contentDescription = "Search AudiobookBay")
+            Icon(Icons.Default.Search, contentDescription = "Search audiobooks")
           }
         },
       )

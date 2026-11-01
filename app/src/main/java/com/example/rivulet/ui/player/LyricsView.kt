@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,6 +60,7 @@ fun LyricsView(
   val suggestedQuery = BookIdentity(cleanBookTitle, searchAuthor).query
   var previousSuggestion by rememberSaveable(state.track) { mutableStateOf(suggestedQuery) }
   var query by rememberSaveable(state.track) { mutableStateOf(suggestedQuery) }
+  var textProvider by rememberSaveable(state.track) { mutableStateOf(TextProvider.AUTOMATIC) }
   LaunchedEffect(suggestedQuery) {
     if (query == previousSuggestion) query = suggestedQuery
     previousSuggestion = suggestedQuery
@@ -86,7 +88,7 @@ fun LyricsView(
     picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
   }
   fun search() = repository.searchBooks(query, title = if (query == suggestedQuery) cleanBookTitle else query,
-    author = if (query == suggestedQuery) searchAuthor else "")
+    author = if (query == suggestedQuery) searchAuthor else "", provider = textProvider)
   val findText = { showSearch = true; search() }
   val beginCorrection: (Long?) -> Unit = { sentenceId ->
     if (!state.correction.isEditing) followingBeforeCorrection = following
@@ -177,6 +179,9 @@ fun LyricsView(
     onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
     text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
       OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+      Row(Modifier.fillMaxWidth().horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        TextProvider.entries.forEach { provider -> FilterChip(textProvider == provider, { textProvider = provider; search() }, label = { Text(provider.label) }) }
+      }
       TextButton(onClick = { search() }) { Text("Search") }
       ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
       LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
@@ -268,7 +273,7 @@ fun BookEditionRow(edition: BookEdition, onSelect: () -> Unit, enabled: Boolean 
         modifier = Modifier.size(width = 56.dp, height = 84.dp).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp)).testTag("edition-cover"))
       Column(Modifier.weight(1f)) {
         Text(edition.title, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        Text(listOf(edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Text(listOf(edition.provider.label, edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
         edition.isbn?.let { Text("ISBN $it", style = MaterialTheme.typography.labelSmall) }
       }
     }

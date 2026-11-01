@@ -179,7 +179,11 @@ class FlowingReaderUiTest {
       seen += actions.filter { it.label.startsWith("Seek to:") }.map { it.label }
       // Compose semantics alone bypass Android's 32-action validation. Traverse real platform
       // accessibility nodes as UIAutomator/TalkBack do; this crashed on the previous implementation.
-      val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow
+      var root: AccessibilityNodeInfo? = null
+      compose.waitUntil(5_000) {
+        root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow
+        root != null
+      }
       assertNotNull(root)
       val queue = ArrayDeque<AccessibilityNodeInfo>(); queue.add(root!!)
       var visited = 0

@@ -9,11 +9,20 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-data class BookEdition(val title: String, val author: String, val language: String, val format: String, val isbn: String?, val url: String, val downloadUrl: String? = null, val coverUrl: String? = null)
+enum class TextProvider(val label: String) { AUTOMATIC("Gutenberg first"), GUTENBERG("Project Gutenberg"), ZLIBRARY("Z-Library") }
+data class BookEdition(val title: String, val author: String, val language: String, val format: String, val isbn: String?, val url: String,
+  val downloadUrl: String? = null, val coverUrl: String? = null, val provider: TextProvider = TextProvider.ZLIBRARY,
+  val providerId: String = "", val linkedSource: Boolean = false) {
+  val catalogKey: String get() = providerId.ifBlank { url.substringBefore('#').trimEnd('/') }
+}
+data class BookLookupRequest(val query: String, val title: String = query, val author: String = "",
+  val linkedTextUrl: String? = null, val provider: TextProvider = TextProvider.AUTOMATIC)
+data class BookLookupResult(val editions: List<BookEdition>, val message: String? = null, val accessUrl: String? = null, val complete: Boolean = true)
 class SiteAccessRequired(val url: String) : IOException("Z-Library needs a browser access check or login.")
 
 interface BookCatalog {
   fun search(query: String): List<BookEdition>
+  fun lookup(request: BookLookupRequest): BookLookupResult = BookLookupResult(search(request.query))
   fun download(edition: BookEdition, renderedHtml: String? = null): Triple<ByteArray, String, String>
 }
 

@@ -36,7 +36,7 @@ class BookLookupUiTest {
           {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) { modifier, visible -> LyricsView(repo, emptyList(), title, {}, modifier, isVisible = visible) }
       } }
       compose.onNodeWithTag("player-text").performClick()
-      compose.onNodeWithText("Buffering from peers…").assertIsDisplayed()
+      compose.onNodeWithText("Buffering audio…").assertIsDisplayed()
       compose.onNodeWithText("Find book text").performClick()
       compose.waitUntil(5000) { observedQuery.get() == "Simon Kurt Unsworth" }
       compose.runOnUiThread { title = "The Devil's Detective" }
@@ -48,7 +48,7 @@ class BookLookupUiTest {
       compose.waitUntil(5000) { observedQuery.get() == "My chosen edition" }
       assertEquals(2, repo.state.value.track!!.fileIndex)
       compose.onNodeWithText("Done").performClick()
-      compose.onNodeWithText("Buffering from peers…").assertIsDisplayed()
+      compose.onNodeWithText("Buffering audio…").assertIsDisplayed()
     } finally { compose.runOnUiThread { repo.close() }; db.close(); context.deleteDatabase(name) }
   }
 }

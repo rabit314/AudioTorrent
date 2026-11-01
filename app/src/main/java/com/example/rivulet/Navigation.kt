@@ -4,7 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
-import com.example.rivulet.ui.audiobookbay.AudioBookBayScreen
+import com.example.rivulet.ui.catalog.AudiobookSearchScreen
 import com.example.rivulet.ui.history.HistoryScreen
 import com.example.rivulet.ui.library.LibraryScreen
 import com.example.rivulet.ui.player.PlayerScreen
@@ -37,7 +37,7 @@ fun MainNavigation(container: AppContainer, startInPlayer: Boolean = false) {
           )
         }
         entry<AudioBookBay> {
-          AudioBookBayScreen(
+          AudiobookSearchScreen(
             container = container,
             onBack = { backStack.removeLastOrNull() },
             onOpenTorrent = { infoHash -> backStack.add(TorrentDetail(infoHash)) },

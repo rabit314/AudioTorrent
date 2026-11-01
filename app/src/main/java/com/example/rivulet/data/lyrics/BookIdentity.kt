@@ -87,22 +87,25 @@ object BookSearch {
     val title = ReadAlongText.tokens(identity.title)
     val author = ReadAlongText.tokens(identity.author).toSet()
     if (title.isEmpty() || author.isEmpty()) return null
-    return rank(editions, identity.query, identity.title, identity.author).firstOrNull {
+    val matches = rank(editions, identity.query, identity.title, identity.author).filter {
       ReadAlongText.tokens(it.title) == title && ReadAlongText.tokens(it.author).toSet() == author &&
         it.format.equals("EPUB", true) && it.language.trim().lowercase() in setOf("english", "en", "eng")
     }
+    val preferred = matches.filter { it.linkedSource }.ifEmpty { matches.filter { it.provider == TextProvider.GUTENBERG } }.ifEmpty { matches }
+    return preferred.distinctBy { it.provider to it.catalogKey }.singleOrNull()
   }
 
   fun rank(editions: List<BookEdition>, query: String, title: String = query, author: String = ""): List<BookEdition> {
     fun tokens(text: String) = ReadAlongText.tokens(text).toSet()
     val wanted = tokens(title)
     val authorTokens = tokens(author)
-    return editions.distinctBy { it.url.substringBefore('#').trimEnd('/') }.sortedByDescending { edition ->
+    return editions.distinctBy { it.provider to it.catalogKey }.sortedByDescending { edition ->
       val found = tokens(edition.title)
       val overlap = wanted.intersect(found).size
       (if (found == wanted) 1000 else 0) + (if (wanted.isNotEmpty() && found.containsAll(wanted)) 300 else 0) +
         (if (wanted.isEmpty()) 0 else 200 * overlap / wanted.size) - (found - wanted).size.coerceAtMost(30) +
-        authorTokens.intersect(tokens(edition.author)).size * 20 + (if (edition.language.contains("english", true)) 5 else 0)
+        authorTokens.intersect(tokens(edition.author)).size * 20 + (if (edition.language.lowercase() in setOf("english", "en", "eng")) 5 else 0) +
+        (if (edition.provider == TextProvider.GUTENBERG) 1 else 0)
     }
   }
 

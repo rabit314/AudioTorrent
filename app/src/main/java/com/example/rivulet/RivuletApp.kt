@@ -16,6 +16,17 @@ class AppContainer(context: Context) {
   val streamServer = StreamServer(engine)
   val playback = PlaybackController(context, database)
   val audiobookbay = AudioBookBayClient()
+  val librivox = com.example.rivulet.data.catalog.LibriVoxClient()
+  val catalog = com.example.rivulet.data.catalog.AudiobookCatalog(audiobookbay, librivox)
+  val catalogSearch = com.example.rivulet.data.catalog.AudioCatalogSearch(loader = catalog::page)
+
+  suspend fun addAudiobook(detail: com.example.rivulet.data.audiobookbay.AudioBookDetail): Result<String> = try {
+    when (detail.source) {
+      com.example.rivulet.data.audiobookbay.AudioBookSource.AUDIOBOOKBAY -> engine.addMagnet(detail.magnetUri, detail.coverUrl, detail.title)
+      com.example.rivulet.data.audiobookbay.AudioBookSource.LIBRIVOX -> engine.addTorrentFile(librivox.torrent(detail), detail.title, detail.coverUrl, detail.catalogBook)
+    }
+  } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+    catch (error: Exception) { Result.failure(error) }
 
   /** Set when a torrent is added from an external intent; consumed by the library screen. */
   val pendingTorrent = MutableStateFlow<String?>(null)
@@ -31,7 +42,7 @@ class AppContainer(context: Context) {
     playback.queueProvider = { infoHash ->
       val torrent = engine.torrents.value.firstOrNull { it.infoHash == infoHash }
       torrent?.audioFiles?.map {
-        val titleText = if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
+        val titleText = it.chapterTitle ?: if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
         com.example.rivulet.playback.QueueTrack(
           infoHash = torrent.infoHash,
           fileIndex = it.index,

@@ -77,6 +77,27 @@ class BookLookupRegressionTest {
     } finally { withContext(Dispatchers.Main) { repo.close() }; db.close(); context.deleteDatabase(name) }
   }
 
+  @Test fun browserRecoveryForNewQueryCannotMergePreviousGutenbergResults() = runBlocking {
+    val name = "provider-recovery-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name)
+    val old = exact.copy(title = "Old public book", provider = TextProvider.GUTENBERG, providerId = "1342", url = "https://www.gutenberg.org/ebooks/1342")
+    val catalog = object : BookCatalog {
+      override fun search(query: String): List<BookEdition> = if (query == "old") listOf(old) else throw SiteAccessRequired("https://zlib.li/s/new")
+      override fun download(edition: BookEdition, renderedHtml: String?) = error("Unused")
+    }
+    val repo = ReadAlongRepository(context, ReadAlongStore(db), AudioWindowDecoder { error("Unused") }, library = catalog)
+    try {
+      withContext(Dispatchers.Main) { repo.activate(ReadAlongTrack("provider-recovery", 0)) }
+      withTimeout(5000) { repo.state.first { it.phase == ReadAlongPhase.EMPTY } }
+      withContext(Dispatchers.Main) { repo.searchBooks("old") }
+      withTimeout(5000) { repo.state.first { !it.searching && it.editions.isNotEmpty() } }
+      withContext(Dispatchers.Main) { repo.searchBooks("new", provider = TextProvider.ZLIBRARY) }
+      withTimeout(5000) { repo.state.first { it.accessUrl != null } }
+      withContext(Dispatchers.Main) { repo.acceptRenderedSearch("""<z-bookcard title="New book" href="/book/99" language="English"/>""", ZLibraryClient.BASE) }
+      assertEquals("New book", repo.state.value.editions.single().title)
+      assertEquals(TextProvider.ZLIBRARY, repo.state.value.editions.single().provider)
+    } finally { withContext(Dispatchers.Main) { repo.close() }; db.close(); context.deleteDatabase(name) }
+  }
+
   @Test fun catalogIdentityPersistsWithoutChangingTorrentDatabaseVersion() {
     val hash = "test-${UUID.randomUUID()}"
     val metadata = BookCatalogMetadata(context)

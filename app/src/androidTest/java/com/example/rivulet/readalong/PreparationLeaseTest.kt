@@ -13,6 +13,45 @@ import java.security.MessageDigest
 import java.util.UUID
 
 class PreparationLeaseTest {
+  @Test fun metadataReadersSurviveRepeatedRemovalAndShutdown() = runBlocking {
+    val context: Context = ApplicationProvider.getApplicationContext()
+    val name = "metadata-race-${UUID.randomUUID()}.db"
+    val db = TorrentDatabase(context, name)
+    val engine = TorrentEngine(context, db)
+    val current = java.util.concurrent.atomic.AtomicReference<String?>()
+    val reader = launch(Dispatchers.IO) {
+      while (isActive) {
+        current.get()?.let { hash ->
+          engine.findCompanionTextFile(hash)
+          engine.setTorrentDownloadWanted(hash, false) // Also races the full native file refresh.
+        }
+        delay(1)
+      }
+    }
+    try {
+      withTimeout(45_000) {
+        repeat(30) {
+          val hash = engine.addTorrentFile(torrent("metadata-${UUID.randomUUID()}.wav")).getOrThrow()
+          current.set(hash)
+          engine.prepareStream(hash, 0)
+          delay(2)
+          engine.removeTorrent(hash, true)
+          assertNull(engine.find(hash))
+          assertNull(engine.findCompanionTextFile(hash))
+          assertTrue(runCatching { engine.prepareStream(hash, 0) }.isFailure)
+        }
+      }
+      // The reader continues using the last removed hash while the session stops.
+      engine.shutdown()
+      delay(20)
+      assertTrue(engine.addTorrentFile(torrent("stopped.wav")).isFailure)
+    } finally {
+      reader.cancelAndJoin()
+      current.get()?.let { engine.removeTorrent(it, true) }
+      engine.shutdown(); db.close(); context.deleteDatabase(name)
+    }
+  }
+
   @Test fun idleSelectedStreamCanResumeAndOldUrlCannotReplaceNewSelection() = runBlocking {
     val context: Context = ApplicationProvider.getApplicationContext()
     val name = "idle-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name)

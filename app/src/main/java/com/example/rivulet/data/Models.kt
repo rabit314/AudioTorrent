@@ -10,6 +10,7 @@ data class AudioFile(
   val isAudio: Boolean,
   val isWanted: Boolean = false,
   val savedPositionMs: Long = 0L,
+  val chapterTitle: String? = null,
 ) {
   val progress: Float
     get() = if (size <= 0L) 0f else (downloadedBytes.toFloat() / size).coerceIn(0f, 1f)
@@ -33,7 +34,7 @@ data class AudioFile(
 
   /** Formatted title showing folder context if inside subfolders, e.g. "[01] Soul Hunter / Soul Hunter.m4b". */
   val displayTitle: String
-    get() = if (directory.isNotBlank()) "$directory / $name" else name
+    get() = chapterTitle ?: if (directory.isNotBlank()) "$directory / $name" else name
 }
 
 /** UI snapshot of one torrent. */
@@ -53,12 +54,16 @@ data class TorrentUi(
   val error: String? = null,
   val coverUrl: String? = null,
   val catalogTitle: String? = null,
+  val catalogBook: CatalogBook? = null,
 ) {
   /**
    * Audio files serialized by the exact sequence defined by the torrent provider (index order).
    * Preserves author/creator sequencing by default.
    */
-  val audioFiles: List<AudioFile> = files.filter { it.isAudio }.sortedBy { it.index }
+  val audioFiles: List<AudioFile> = if (catalogBook != null) {
+    val byIndex = files.filter { it.isAudio }.associateBy { it.index }
+    catalogBook.chapters.mapNotNull { chapter -> byIndex[chapter.fileIndex]?.copy(chapterTitle = chapter.title) }
+  } else files.filter { it.isAudio }.sortedBy { it.index }
 
   val isReady: Boolean
     get() = hasMetadata && audioFiles.isNotEmpty()
