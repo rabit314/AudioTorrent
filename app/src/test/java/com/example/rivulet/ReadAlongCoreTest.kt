@@ -135,6 +135,17 @@ class ReadAlongCoreTest {
     assertEquals("https://zlib.li/dl/vBzZ3O5p2w", editions.first().downloadUrl)
   }
 
+  @Test fun textProviderLabelsMatchUserFacingIntent() {
+    assertEquals("Automatic (All Sources)", TextProvider.AUTOMATIC.label)
+    assertEquals("Public Domain (Gutenberg)", TextProvider.GUTENBERG.label)
+    assertEquals("Z-Library", TextProvider.ZLIBRARY.label)
+  }
+
+  @Test fun zlibraryPrewarmerHandlesClearanceCheckSafely() {
+    // In headless JVM unit test environment, CookieManager/WebView gracefully handles absent webview runtime
+    assertFalse(ZLibraryPrewarmer.hasClearanceCookie())
+  }
+
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }
   private fun audio(index: Int, path: String) = AudioFile(index, path, path.substringAfterLast('/'), 100, 100, true)
 }

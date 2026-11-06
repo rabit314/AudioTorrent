@@ -9,7 +9,7 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-enum class TextProvider(val label: String) { AUTOMATIC("Gutenberg first"), GUTENBERG("Project Gutenberg"), ZLIBRARY("Z-Library") }
+enum class TextProvider(val label: String) { AUTOMATIC("Automatic (All Sources)"), GUTENBERG("Public Domain (Gutenberg)"), ZLIBRARY("Z-Library") }
 data class BookEdition(val title: String, val author: String, val language: String, val format: String, val isbn: String?, val url: String,
   val downloadUrl: String? = null, val coverUrl: String? = null, val provider: TextProvider = TextProvider.ZLIBRARY,
   val providerId: String = "", val linkedSource: Boolean = false) {

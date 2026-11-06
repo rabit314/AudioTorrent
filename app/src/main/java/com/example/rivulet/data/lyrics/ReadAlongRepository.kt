@@ -138,7 +138,10 @@ class ReadAlongRepository(
   fun setVisible(value: Boolean) {
     visible = value
     // Let a bounded in-flight window finish so returning to Text doesn't discard useful work.
-    if (value) scheduleAnalysis()
+    if (value) {
+      ZLibraryPrewarmer.warmUp(context)
+      scheduleAnalysis()
+    }
   }
 
   fun playback(position: Long, duration: Long, track: ReadAlongTrack? = mutable.value.track, prepared: Boolean = true) {
@@ -240,9 +243,18 @@ class ReadAlongRepository(
         if (lookupCurrent(search)) {
           search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(emptyList(), error.message) }
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error !is SiteAccessRequired) offerRecovery(search.track, search.version, "Retry search") {
-            searchBooks(search.query, force = true, title = search.title, author = search.author,
-              automaticKey = search.automaticKey, selectedTracks = search.selectedTracks, provider = search.provider)
+          if (error is SiteAccessRequired) {
+            ZLibraryPrewarmer.warmUp(context) { success ->
+              if (success && lookupCurrent(search) && mutable.value.accessUrl != null) {
+                mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Loading books…") }
+                lookupJob = scope.launch { runLookup(search) }
+              }
+            }
+          } else {
+            offerRecovery(search.track, search.version, "Retry search") {
+              searchBooks(search.query, force = true, title = search.title, author = search.author,
+                automaticKey = search.automaticKey, selectedTracks = search.selectedTracks, provider = search.provider)
+            }
           }
         }
       }
@@ -291,7 +303,16 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         if (current(track, version) && request == lookupSequence) {
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error !is SiteAccessRequired) offerRecovery(track, version, "Retry ebook download") { downloadEdition(edition, selectedTracks, renderedHtml) }
+          if (error is SiteAccessRequired) {
+            ZLibraryPrewarmer.warmUp(context) { success ->
+              if (success && current(track, version) && request == lookupSequence && mutable.value.accessUrl != null) {
+                mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Downloading…") }
+                downloadEdition(edition, selectedTracks, renderedHtml)
+              }
+            }
+          } else {
+            offerRecovery(track, version, "Retry ebook download") { downloadEdition(edition, selectedTracks, renderedHtml) }
+          }
         }
       }
     }
