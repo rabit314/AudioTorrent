@@ -116,8 +116,8 @@ class TorrentEngine(
       while (scope.isActive) {
         val hasActivity = handles.values.any { runCatching { it.isValid && it.status().downloadRate() > 0 }.getOrDefault(false) }
         refresh(logStats = (++logCounter % 5 == 0))
-        // Adaptive polling: 1000ms when actively downloading, 3000ms when idle to save CPU/battery
-        delay(if (hasActivity) 1000L else 3000L)
+        // Adaptive polling: 1500ms when actively downloading, 4000ms when idle to save CPU/battery on low-end devices
+        delay(if (hasActivity) 1500L else 4000L)
       }
     } catch (cancelled: CancellationException) {
       throw cancelled
@@ -444,7 +444,16 @@ class TorrentEngine(
   // Offline Downloads & Management
   // ---------------------------------------------------------------------------------------------
 
+  fun getStorageUsageBytes(): Long = _torrents.value.sumOf { it.doneBytes }
+  fun getFreeDiskSpaceBytes(): Long = saveDir.freeSpace
+  fun hasSufficientDiskSpace(requiredBytes: Long = 50L * 1024 * 1024): Boolean =
+    saveDir.freeSpace > requiredBytes + MIN_FREE_DISK_BUFFER_BYTES
+
   fun setFileDownloadWanted(hash: String, fileIndex: Int, wanted: Boolean): Unit = synchronized(metadataLock) {
+    if (wanted && !hasSufficientDiskSpace()) {
+      Log.w(TAG, "Cannot start download: low disk space (${saveDir.freeSpace / 1024 / 1024} MB available)")
+      return
+    }
     val handle = getLiveHandle(hash) ?: return
     handle.filePriority(fileIndex, if (wanted) Priority.DEFAULT else Priority.IGNORE)
     database.saveFileWanted(hash, fileIndex, wanted)
@@ -452,6 +461,10 @@ class TorrentEngine(
   }
 
   fun setTorrentDownloadWanted(hash: String, wanted: Boolean): Unit = synchronized(metadataLock) {
+    if (wanted && !hasSufficientDiskSpace()) {
+      Log.w(TAG, "Cannot start torrent download: low disk space (${saveDir.freeSpace / 1024 / 1024} MB available)")
+      return
+    }
     val handle = getLiveHandle(hash) ?: return
     val info = handle.torrentFile() ?: return
     val count = info.numFiles()
@@ -707,5 +720,6 @@ class TorrentEngine(
     const val TAG = "RivuletEngine"
     const val SESSION_KEY = "__session__"
     const val MAGNET_TIMEOUT_SECONDS = 45
+    const val MIN_FREE_DISK_BUFFER_BYTES = 500L * 1024 * 1024
   }
 }

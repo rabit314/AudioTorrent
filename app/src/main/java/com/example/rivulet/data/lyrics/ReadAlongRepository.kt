@@ -470,7 +470,7 @@ class ReadAlongRepository(
           }
           analysisStartMs = positionMs
           mutable.update { it.copy(phase = if (ahead) ReadAlongPhase.READY else ReadAlongPhase.PREPARING,
-            preparingAhead = ahead, message = if (ahead) null else "Preparing sync… Audio can keep playing.") }
+            preparingAhead = ahead, message = if (ahead) null else it.message) }
           val began = android.os.SystemClock.elapsedRealtime()
           val decodeStart = (start - 5_000).coerceAtLeast(0)
           val pcm = decoder.decode(track, decodeStart, minOf(30_000, durationMs - decodeStart))
@@ -506,7 +506,7 @@ class ReadAlongRepository(
             analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
             message = if (!ahead && matchedCount == 0) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           publishLines()
-          delay(100)
+          delay(if (ahead) 1500L else 200L)
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error

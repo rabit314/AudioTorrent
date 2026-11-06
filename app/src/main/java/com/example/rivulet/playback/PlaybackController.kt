@@ -63,21 +63,18 @@ data class PlaybackUi(
   val isBuffering: Boolean = false,
   val hasMedia: Boolean = false,
   val isVoiceBoost: Boolean = false,
-  val isSkipSilence: Boolean = false,
   val positionMs: Long = 0L,
   val durationMs: Long = 0L,
   val bufferedMs: Long = 0L,
   val speed: Float = 1.0f,
   val hasNext: Boolean = false,
   val hasPrevious: Boolean = false,
-  val sleepTimerRemainingSec: Int? = null,
-  val isSleepTimerEndOfTrack: Boolean = false,
   val error: String? = null,
 )
 
 /**
  * App-scoped ExoPlayer with background MediaSessionService coordination,
- * per-track resume persistence, queue management, speed control and sleep timer.
+ * per-track resume persistence, queue management, and speed control.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackController(
@@ -134,10 +131,6 @@ class PlaybackController(
   private var requestSequence = 0L
   private var requestOwner: Job? = null
 
-  private var sleepTimerJob: Job? = null
-  private var sleepTimerRemainingSec: Int? = null
-  private var sleepTimerEndOfTrack: Boolean = false
-
   var analysisDataSource: (suspend (com.example.rivulet.data.lyrics.ReadAlongTrack) -> android.media.MediaDataSource)? = null
   val readAlong = com.example.rivulet.data.lyrics.ReadAlongRepository(
     context.applicationContext,
@@ -188,12 +181,7 @@ class PlaybackController(
         override fun onPlaybackStateChanged(playbackState: Int) {
           if (playbackState == Player.STATE_ENDED) {
             saveCurrentPosition()
-            if (sleepTimerEndOfTrack) {
-              sleepTimerEndOfTrack = false
-              sleepTimerRemainingSec = null
-              player.pause()
-              publish()
-            } else if (hasNext()) {
+            if (hasNext()) {
               playNext()
             }
           }
@@ -581,63 +569,9 @@ class PlaybackController(
     }
   }
 
-  fun toggleSkipSilence(): Boolean {
-    val newMode = !player.skipSilenceEnabled
-    player.skipSilenceEnabled = newMode
-    publish()
-    return newMode
-  }
-
   fun setSpeed(speed: Float) {
     val clamped = speed.coerceIn(0.5f, 3.0f)
     player.playbackParameters = PlaybackParameters(clamped)
-    publish()
-  }
-
-  fun startSleepTimer(minutes: Int) {
-    cancelSleepTimer()
-    if (minutes <= 0) return
-    sleepTimerRemainingSec = minutes * 60
-    sleepTimerEndOfTrack = false
-    publish()
-
-    sleepTimerJob =
-      scope.launch {
-        while (isActive && (sleepTimerRemainingSec ?: 0) > 0) {
-          delay(1000)
-          val remaining = (sleepTimerRemainingSec ?: 1) - 1
-          sleepTimerRemainingSec = remaining
-          // Smooth 30s gradual volume fade-out
-          if (remaining in 1..30) {
-            val fadeVol = (remaining / 30.0f).coerceIn(0.0f, 1.0f)
-            player.volume = fadeVol
-          }
-          if (remaining <= 0) {
-            player.pause()
-            player.volume = 1.0f
-            saveCurrentPosition()
-            sleepTimerRemainingSec = null
-            publish()
-            break
-          }
-          publish()
-        }
-      }
-  }
-
-  fun startSleepTimerEndOfTrack() {
-    cancelSleepTimer()
-    sleepTimerEndOfTrack = true
-    sleepTimerRemainingSec = null
-    publish()
-  }
-
-  fun cancelSleepTimer() {
-    sleepTimerJob?.cancel()
-    sleepTimerJob = null
-    sleepTimerRemainingSec = null
-    sleepTimerEndOfTrack = false
-    player.volume = 1.0f
     publish()
   }
 
@@ -651,7 +585,6 @@ class PlaybackController(
     currentInfoHash = null
     currentFileIndex = -1
     lastError = null
-    cancelSleepTimer()
     publish()
   }
 
@@ -742,15 +675,12 @@ class PlaybackController(
         isBuffering = player.playbackState == Player.STATE_BUFFERING,
         hasMedia = player.mediaItemCount > 0 || (currentInfoHash != null && currentFileIndex >= 0),
         isVoiceBoost = isVoiceBoost,
-        isSkipSilence = player.skipSilenceEnabled,
         positionMs = restored?.positionMs ?: player.currentPosition.coerceAtLeast(0L),
         durationMs = restored?.durationMs ?: if (duration > 0L && duration != C.TIME_UNSET) duration else 0L,
         bufferedMs = player.bufferedPosition.coerceAtLeast(0L),
         speed = player.playbackParameters.speed,
         hasNext = hasNext(),
         hasPrevious = hasPrevious(),
-        sleepTimerRemainingSec = sleepTimerRemainingSec,
-        isSleepTimerEndOfTrack = sleepTimerEndOfTrack,
         error = lastError,
       )
   }

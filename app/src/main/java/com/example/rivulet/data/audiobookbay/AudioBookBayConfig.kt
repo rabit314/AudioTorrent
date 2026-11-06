@@ -12,13 +12,11 @@ object AudioBookBayConfig {
 
   val DEFAULT_TRACKERS = listOf(
     "udp://tracker.opentrackr.org:1337/announce",
-    "udp://open.stealth.si:80/announce",
+    "udp://open.demonii.com:1337/announce",
     "udp://tracker.torrent.eu.org:451/announce",
     "udp://explodie.org:6969/announce",
-    "udp://tracker.coppersurfer.tk:6969/announce",
-    "udp://p4p.arenabg.com:1337/announce",
-    "udp://tracker.internetwarriors.net:1337/announce",
-    "udp://9.rarbg.to:2920/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
     "udp://tracker.openbittorrent.com:6969/announce"
   )
 }

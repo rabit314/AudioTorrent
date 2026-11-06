@@ -70,7 +70,10 @@ class StreamSession(
     runCatching { handle.forceDHTAnnounce() }
     // Must be set before piece deadlines: changing file priorities resets piece priorities.
     handle.filePriority(fileIndex, Priority.TOP_PRIORITY)
-    handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD, TorrentFlags.SEQUENTIAL_DOWNLOAD)
+    // Only apply whole-torrent sequential flag for single-file torrents; multi-file streams rely on piece deadlines to avoid piece 0 contention.
+    if (info.numFiles() <= 1) {
+      handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD, TorrentFlags.SEQUENTIAL_DOWNLOAD)
+    }
     armWindow(0)
     armMp4TailIfNeeded()
   }

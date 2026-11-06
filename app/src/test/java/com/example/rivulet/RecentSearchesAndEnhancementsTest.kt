@@ -42,25 +42,6 @@ class RecentSearchesAndEnhancementsTest {
     assertEquals(45_000L, computeResumePosition(45_000L, 0L))
   }
 
-  @Test
-  fun testSleepTimerVolumeFadeCalculation() {
-    fun computeFadeVolume(remainingSeconds: Long): Float {
-      return (remainingSeconds.coerceAtLeast(0) / 30.0f).coerceIn(0.0f, 1.0f)
-    }
-
-    // Full volume at or above 30 seconds
-    assertEquals(1.0f, computeFadeVolume(45L), 0.001f)
-    assertEquals(1.0f, computeFadeVolume(30L), 0.001f)
-
-    // Linear fade during the final 30 seconds
-    assertEquals(0.8f, computeFadeVolume(24L), 0.001f)
-    assertEquals(0.5f, computeFadeVolume(15L), 0.001f)
-    assertEquals(0.2f, computeFadeVolume(6L), 0.001f)
-    assertEquals(0.0f, computeFadeVolume(0L), 0.001f)
-
-    // Negative seconds safety clamp
-    assertEquals(0.0f, computeFadeVolume(-5L), 0.001f)
-  }
 
   @Test
   fun testPlaybackSpeedSteppingAndClamping() {

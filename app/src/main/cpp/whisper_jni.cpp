@@ -41,9 +41,9 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env,
     std::vector<float> pcm(size);
     env->GetFloatArrayRegion(input, 0, size, pcm.data());
     auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    // Bound CPU use while letting recognition stay ahead of normal playback on multicore devices.
+    // Bound CPU use to 2 threads on mobile to preserve thermal headroom and avoid UI frame drops.
     const auto cores = std::thread::hardware_concurrency();
-    params.n_threads = cores ? std::min(4u, cores) : 2;
+    params.n_threads = cores ? std::min(2u, cores) : 2;
     params.language = "en";
     params.translate = false;
     params.no_context = true;

@@ -119,7 +119,7 @@ fun LyricsView(
       if (state.bookId != null && !state.correction.isEditing) TextButton(onClick = { beginCorrection(null) }, modifier = Modifier.testTag("correct-sync")) { Text("Correct sync") }
       Box {
         TextButton(onClick = { showOptions = true }) {
-          if (state.preparingAhead && state.lines.isNotEmpty()) {
+          if ((state.preparingAhead || state.phase == ReadAlongPhase.PREPARING) && state.lines.isNotEmpty()) {
             CircularProgressIndicator(Modifier.size(12.dp).semantics { contentDescription = "Preparing the next passage" }, strokeWidth = 1.5.dp)
             Spacer(Modifier.width(6.dp))
           }
