@@ -16,7 +16,13 @@ data class BookSentence(
 ) {
   /** Rebuilt from source on load; display metadata never changes a saved timing or identity. */
   fun withTiming(timing: TimedLine?): TimedLine =
-    (timing ?: TimedLine(id, -1, -1, text)).copy(isParagraphStart = isParagraphStart || timing?.isParagraphStart == true)
+    TimedLine(
+      id = id,
+      startTimeMs = timing?.startTimeMs ?: -1,
+      endTimeMs = timing?.endTimeMs ?: -1,
+      text = text,
+      isParagraphStart = isParagraphStart || timing?.isParagraphStart == true
+    )
 }
 
 data class ReadAlongState(
@@ -46,6 +52,7 @@ data class ReadAlongState(
   val canUndoCorrection: Boolean = false,
   val choosingEdition: Boolean = false,
   val preparingAhead: Boolean = false,
+  val syncProgress: Float? = null,
 ) {
   val canEstimate: Boolean get() = bookId != null && source == TextSyncSource.NARRATION && matchedSentences == 0 &&
     (phase == ReadAlongPhase.NEEDS_MODEL ||
@@ -104,8 +111,72 @@ object ReadAlongText {
 }
 
 object ReadAlongTimeline {
-  fun activeIndex(lines: List<TimedLine>, positionMs: Long, offsetMs: Long): Int =
-    lines.indexOfFirst { it.isTimed && positionMs - offsetMs >= it.startTimeMs && positionMs - offsetMs < it.endTimeMs }
+  fun activeIndex(lines: List<TimedLine>, positionMs: Long, offsetMs: Long): Int {
+    if (lines.isEmpty()) return -1
+    val targetMs = positionMs - offsetMs
+    if (targetMs < 0) return -1
+
+    // Fast binary search across timed lines
+    var low = 0
+    var high = lines.size - 1
+    var candidate = -1
+
+    while (low <= high) {
+      val mid = (low + high).ushr(1)
+      val line = lines[mid]
+      if (line.isTimed) {
+        if (line.startTimeMs <= targetMs) {
+          candidate = mid
+          low = mid + 1
+        } else {
+          high = mid - 1
+        }
+      } else {
+        // Find nearest timed line on left to maintain binary search invariant
+        var leftTimed = -1
+        for (k in mid downTo low) {
+          if (lines[k].isTimed) { leftTimed = k; break }
+        }
+        if (leftTimed != -1) {
+          if (lines[leftTimed].startTimeMs <= targetMs) {
+            candidate = maxOf(candidate, leftTimed)
+            low = mid + 1
+          } else {
+            high = leftTimed - 1
+          }
+        } else {
+          low = mid + 1
+        }
+      }
+    }
+
+    if (candidate != -1) {
+      val line = lines[candidate]
+      // Directly within the active spoken duration
+      if (targetMs < line.endTimeMs) {
+        return candidate
+      }
+      // Sticky tracking: remain active during pause until the next timed line starts
+      var nextTimedStart = Long.MAX_VALUE
+      for (j in (candidate + 1) until lines.size) {
+        if (lines[j].isTimed) {
+          nextTimedStart = lines[j].startTimeMs
+          break
+        }
+      }
+      if (nextTimedStart != Long.MAX_VALUE) {
+        if (targetMs < nextTimedStart) {
+          return candidate
+        }
+      } else {
+        // Last timed sentence: stay sticky for up to 3 seconds of trailing silence
+        if (targetMs <= line.endTimeMs + 3_000L) {
+          return candidate
+        }
+      }
+    }
+    return -1
+  }
 
   fun seekPosition(line: TimedLine, offsetMs: Long): Long = (line.startTimeMs + offsetMs).coerceAtLeast(0)
   fun calibration(line: TimedLine, positionMs: Long): Long = positionMs - line.startTimeMs

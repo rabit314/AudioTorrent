@@ -123,10 +123,15 @@ class ReadAlongRepository(
           timings = LrcParser.detectAndParse(book.book.chapters.joinToString("\n") { it.text }).associateByTo(LinkedHashMap()) { it.id }
           sentences = timings.values.map { BookSentence(it.id, 1, book.book.title, it.text) }
         }
+        interpolateGaps()
         val lines = sentences.map { it.withTiming(timings[it.id]) }
+        val total = sentences.size
+        val matched = lines.count { it.isTimed }
+        val syncProg = if (total > 0 && matched > 0) (matched.toFloat() / total).coerceIn(0f, 1f) else null
         mutable.value = ReadAlongState(track = track, bookId = book.id, title = book.book.title, isbn = book.book.isbn,
           chapters = book.book.chapters, offsetMs = saved.second, phase = ReadAlongPhase.READY, source = book.source, trackIndices = indices,
-          lines = lines, matchedSentences = lines.count { it.isTimed }, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, saved.second))
+          lines = lines, matchedSentences = matched, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, saved.second),
+          syncProgress = syncProg)
         scheduleAnalysis()
       } catch (error: Exception) {
         fail(error, track, version)
@@ -476,13 +481,27 @@ class ReadAlongRepository(
       try {
         while (isActive && visible && valid()) {
           val base = windowBase()
-          val starts = listOf(base, base + 20_000).filter { it < durationMs }
-          val pending = withContext(Dispatchers.IO) { starts.filter { !store.windowReady(track, book.id, it) } }
+          // Immediate Horizon: check [base, base + 20s, base + 40s, base + 60s, base + 80s]
+          val immediateStarts = (0..4).map { base + it * 20_000L }.filter { it < durationMs }
+          val immediatePending = withContext(Dispatchers.IO) { immediateStarts.filter { !store.windowReady(track, book.id, it) } }
           if (!valid()) return@launch
-          Log.d("ReadAlongPerf", "cacheHits=${starts.size - pending.size} requestedWindows=${starts.size}")
-          val start = pending.firstOrNull()
+          Log.d("ReadAlongPerf", "cacheHits=${immediateStarts.size - immediatePending.size} requestedImmediate=${immediateStarts.size}")
+          val start = if (immediatePending.isNotEmpty()) {
+            immediatePending.first()
+          } else {
+            // Progressive background sweep: find next uncached window beyond immediate horizon
+            val totalWindows = (durationMs / 20_000L + 1).toInt()
+            withContext(Dispatchers.IO) {
+              (0 until totalWindows)
+                .asSequence()
+                .map { it * 20_000L }
+                .filter { it >= base + 100_000L && it < durationMs }
+                .firstOrNull { !store.windowReady(track, book.id, it) }
+            }
+          }
           if (start == null) { exhaustedBase = base; break }
           val ahead = start > base
+          val isImmediate = start <= base + 40_000L
           if (!models.isInstalled()) {
             exhaustedBase = base
             if (!ahead && modelJob?.isActive != true) mutable.update { it.copy(phase = ReadAlongPhase.NEEDS_MODEL,
@@ -527,7 +546,7 @@ class ReadAlongRepository(
             analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
             message = if (!ahead && matchedCount == 0) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           publishLines()
-          delay(if (ahead) 1500L else 200L)
+          delay(if (ahead) (if (isImmediate) 350L else 1500L) else 200L)
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
@@ -772,9 +791,57 @@ class ReadAlongRepository(
     mutable.update { it.copy(correction = SyncCorrectionState(event = correctionSequence), canUndoCorrection = false) }
   }
 
+  private fun interpolateGaps() {
+    if (sentences.isEmpty() || timings.isEmpty()) return
+    var i = 0
+    while (i < sentences.size) {
+      val startSentence = sentences[i]
+      val startTiming = timings[startSentence.id]
+      if (startTiming != null && startTiming.isTimed) {
+        var j = i + 1
+        while (j < sentences.size && sentences[j].chapterIndex == startSentence.chapterIndex && timings[sentences[j].id] == null) {
+          j++
+        }
+        if (j < sentences.size && sentences[j].chapterIndex == startSentence.chapterIndex) {
+          val endSentence = sentences[j]
+          val endTiming = timings[endSentence.id]
+          val gapCount = j - i - 1
+          if (endTiming != null && endTiming.isTimed && gapCount in 1..6) {
+            val gapDurationMs = endTiming.startTimeMs - startTiming.endTimeMs
+            if (gapDurationMs in 300L..25_000L) {
+              val gapSentences = (i + 1 until j).map { sentences[it] }
+              val wordCounts = gapSentences.map { ReadAlongText.tokens(it.text).size.coerceAtLeast(1) }
+              val totalWords = wordCounts.sum().coerceAtLeast(1)
+              var cursorMs = startTiming.endTimeMs
+              gapSentences.forEachIndexed { idx, s ->
+                val dur = (gapDurationMs * wordCounts[idx]) / totalWords
+                val lineStart = cursorMs
+                val lineEnd = (cursorMs + dur).coerceAtMost(endTiming.startTimeMs)
+                timings[s.id] = TimedLine(s.id, lineStart, lineEnd, "")
+                cursorMs = lineEnd
+              }
+            }
+          }
+        }
+        i = j
+      } else {
+        i++
+      }
+    }
+  }
+
   private fun publishLines() {
+    interpolateGaps()
     val lines = sentences.map { it.withTiming(timings[it.id]) }
-    mutable.update { it.copy(lines = lines, matchedSentences = lines.count { line -> line.isTimed }, activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, it.offsetMs)) }
+    val total = sentences.size
+    val matched = lines.count { line -> line.isTimed }
+    val syncProg = if (total > 0 && matched > 0) (matched.toFloat() / total).coerceIn(0f, 1f) else null
+    mutable.update { it.copy(
+      lines = lines,
+      matchedSentences = matched,
+      activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, it.offsetMs),
+      syncProgress = syncProg
+    ) }
   }
   private fun current(track: ReadAlongTrack, version: Long) = mutable.value.track == track && generation == version
   private fun fail(error: Exception, track: ReadAlongTrack, version: Long) {

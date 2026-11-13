@@ -117,6 +117,15 @@ fun LyricsView(
     FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, itemVerticalAlignment = Alignment.CenterVertically) {
       if (state.correction.isEditing) Text("Correct sync", style = MaterialTheme.typography.labelLarge)
       if (state.bookId != null && !state.correction.isEditing) TextButton(onClick = { beginCorrection(null) }, modifier = Modifier.testTag("correct-sync")) { Text("Correct sync") }
+      state.syncProgress?.let { prog ->
+        val syncLabel = if (prog >= 0.99f) "✓ Synced" else "${(prog * 100).toInt()}% synced"
+        Text(
+          text = syncLabel,
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+          modifier = Modifier.padding(horizontal = 6.dp)
+        )
+      }
       Box {
         TextButton(onClick = { showOptions = true }) {
           if ((state.preparingAhead || state.phase == ReadAlongPhase.PREPARING) && state.lines.isNotEmpty()) {

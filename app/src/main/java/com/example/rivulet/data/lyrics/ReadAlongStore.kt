@@ -93,7 +93,7 @@ class ReadAlongStore(private val database: TorrentDatabase) {
   fun setChapterHint(track: ReadAlongTrack, chapter: Int) { database.writableDatabase.update("readalong_tracks", ContentValues().apply { put("chapter_hint", chapter) }, "info_hash=? AND file_index=?", arrayOf(track.infoHash, track.fileIndex.toString())) }
 
   fun timings(track: ReadAlongTrack, bookId: String): List<TimedLine> = database.readableDatabase.query("readalong_timings", null, "info_hash=? AND file_index=? AND book_id=?", arrayOf(track.infoHash, track.fileIndex.toString(), bookId), null, null, "start_ms").use { c ->
-    buildList { while (c.moveToNext()) add(TimedLine(c.getLong(c.getColumnIndexOrThrow("sentence_id")), c.getLong(c.getColumnIndexOrThrow("start_ms")), c.getLong(c.getColumnIndexOrThrow("end_ms")), c.getString(c.getColumnIndexOrThrow("text")))) }
+    buildList { while (c.moveToNext()) add(TimedLine(c.getLong(c.getColumnIndexOrThrow("sentence_id")), c.getLong(c.getColumnIndexOrThrow("start_ms")), c.getLong(c.getColumnIndexOrThrow("end_ms")), c.getString(c.getColumnIndexOrThrow("text")) ?: "")) }
   }
 
   fun saveWindow(track: ReadAlongTrack, bookId: String, startMs: Long, endMs: Long, lines: List<TimedLine>, complete: Boolean = true) {
@@ -103,9 +103,10 @@ class ReadAlongStore(private val database: TorrentDatabase) {
       // A delayed result must not write into a replaced attachment.
       val current = db.rawQuery("SELECT book_id FROM readalong_tracks WHERE info_hash=? AND file_index=?", arrayOf(track.infoHash, track.fileIndex.toString())).use { if (it.moveToFirst()) it.getString(0) else null }
       if (current != bookId) return
+      // Lean storage: store timestamps without duplicating sentence text strings in SQLite
       lines.filter { it.isTimed }.forEach { line -> db.insertWithOnConflict("readalong_timings", null, ContentValues().apply {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId)
-        put("sentence_id", line.id); put("start_ms", line.startTimeMs); put("end_ms", line.endTimeMs); put("text", line.text)
+        put("sentence_id", line.id); put("start_ms", line.startTimeMs); put("end_ms", line.endTimeMs); put("text", "")
       }, SQLiteDatabase.CONFLICT_REPLACE) }
       if (complete) db.insertWithOnConflict("readalong_windows", null, ContentValues().apply {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId); put("start_ms", startMs); put("end_ms", endMs)

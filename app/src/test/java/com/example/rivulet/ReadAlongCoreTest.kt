@@ -146,6 +146,46 @@ class ReadAlongCoreTest {
     assertFalse(ZLibraryPrewarmer.hasClearanceCookie())
   }
 
+  @Test fun binarySearchStickyTrackingKeepsSentenceActiveDuringPauses() {
+    val line1 = TimedLine(1, 10_000, 14_000, "First sentence here.")
+    val line2 = TimedLine(2, 16_000, 20_000, "Second sentence follows after pause.")
+    val lines = listOf(line1, line2)
+
+    // Prior to first sentence
+    assertEquals(-1, ReadAlongTimeline.activeIndex(lines, 9_999, 0))
+
+    // During first sentence
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 10_000, 0))
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 12_000, 0))
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 13_999, 0))
+
+    // In the pause between first and second sentence (14_000 to 16_000): sticky line 0
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 14_500, 0))
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 15_999, 0))
+
+    // Exactly at second sentence start
+    assertEquals(1, ReadAlongTimeline.activeIndex(lines, 16_000, 0))
+    assertEquals(1, ReadAlongTimeline.activeIndex(lines, 18_000, 0))
+
+    // Within 3 seconds after last sentence ends: sticky line 1
+    assertEquals(1, ReadAlongTimeline.activeIndex(lines, 21_000, 0))
+    // Past 3 seconds after last sentence: inactive
+    assertEquals(-1, ReadAlongTimeline.activeIndex(lines, 24_000, 0))
+  }
+
+  @Test fun withTimingAlwaysPopulatesCanonicalText() {
+    val sentence = BookSentence(42L, 1, "Chapter 1", "The true canonical text from epub.")
+    // Database returns empty text to save 75% space
+    val dbTimedLine = TimedLine(42L, 5_000, 8_000, "")
+    val hydrated = sentence.withTiming(dbTimedLine)
+
+    assertEquals(42L, hydrated.id)
+    assertEquals(5_000L, hydrated.startTimeMs)
+    assertEquals(8_000L, hydrated.endTimeMs)
+    assertEquals("The true canonical text from epub.", hydrated.text)
+    assertTrue(hydrated.isTimed)
+  }
+
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }
   private fun audio(index: Int, path: String) = AudioFile(index, path, path.substringAfterLast('/'), 100, 100, true)
 }
