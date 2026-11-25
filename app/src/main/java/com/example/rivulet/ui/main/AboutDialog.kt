@@ -1,7 +1,7 @@
 package com.example.rivulet.ui.main
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,7 +35,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -60,7 +59,11 @@ fun AboutDialog(
         .fillMaxWidth(0.92f)
         .padding(vertical = 24.dp),
       shape = RoundedCornerShape(24.dp),
-      colors = CardDefaults.cardColors(containerColor = Color(0xFF14171F)),
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+      colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+      ),
     ) {
       Column(
         modifier = Modifier
@@ -78,7 +81,11 @@ fun AboutDialog(
             onClick = onDismiss,
             modifier = Modifier.size(32.dp),
           ) {
-            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.LightGray)
+            Icon(
+              Icons.Default.Close,
+              contentDescription = "Close",
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
           }
         }
 
@@ -97,21 +104,21 @@ fun AboutDialog(
           text = "AudioTorrent",
           style = MaterialTheme.typography.headlineMedium,
           fontWeight = FontWeight.Bold,
-          color = Color.White,
+          color = MaterialTheme.colorScheme.onSurface,
         )
 
         Spacer(Modifier.height(4.dp))
 
         // Version Badge
         Surface(
-          color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+          color = MaterialTheme.colorScheme.primaryContainer,
           shape = RoundedCornerShape(12.dp),
         ) {
           Text(
             text = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
           )
         }
@@ -121,13 +128,13 @@ fun AboutDialog(
         Text(
           text = "Streaming Torrent Audiobook Player with Synchronized Read-Along",
           style = MaterialTheme.typography.bodySmall,
-          color = Color.Gray,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center,
           modifier = Modifier.padding(horizontal = 8.dp),
         )
 
         Spacer(Modifier.height(16.dp))
-        HorizontalDivider(color = Color(0xFF262C3A), thickness = 1.dp)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
         Spacer(Modifier.height(16.dp))
 
         // Feature Highlights
@@ -158,7 +165,7 @@ fun AboutDialog(
         }
 
         Spacer(Modifier.height(16.dp))
-        HorizontalDivider(color = Color(0xFF262C3A), thickness = 1.dp)
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
         Spacer(Modifier.height(12.dp))
 
         // System Info
@@ -166,16 +173,16 @@ fun AboutDialog(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-          Text("Package", fontSize = 11.sp, color = Color.Gray)
-          Text("com.example.rivulet", fontSize = 11.sp, color = Color.LightGray)
+          Text("Package", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          Text("com.example.rivulet", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
         }
         Spacer(Modifier.height(4.dp))
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-          Text("Compatibility", fontSize = 11.sp, color = Color.Gray)
-          Text("Android 8.0+ (API 26–36)", fontSize = 11.sp, color = Color.LightGray)
+          Text("Compatibility", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          Text("Android 8.0+ (API 26–36)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
         }
 
         Spacer(Modifier.height(20.dp))
@@ -183,7 +190,10 @@ fun AboutDialog(
         FilledTonalButton(
           onClick = onDismiss,
           modifier = Modifier.fillMaxWidth(),
-          colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+          colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+          ),
         ) {
           Text("Close", fontWeight = FontWeight.Bold)
         }
@@ -203,7 +213,7 @@ private fun FeatureRow(
     verticalAlignment = Alignment.Top,
   ) {
     Surface(
-      color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+      color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
       shape = RoundedCornerShape(8.dp),
       modifier = Modifier.size(32.dp),
     ) {
@@ -211,7 +221,7 @@ private fun FeatureRow(
         Icon(
           imageVector = icon,
           contentDescription = null,
-          tint = MaterialTheme.colorScheme.primary,
+          tint = MaterialTheme.colorScheme.onPrimaryContainer,
           modifier = Modifier.size(18.dp),
         )
       }
@@ -222,12 +232,12 @@ private fun FeatureRow(
         text = title,
         style = MaterialTheme.typography.bodyMedium,
         fontWeight = FontWeight.SemiBold,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.onSurface,
       )
       Text(
         text = description,
         style = MaterialTheme.typography.bodySmall,
-        color = Color.Gray,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontSize = 11.sp,
         lineHeight = 15.sp,
       )

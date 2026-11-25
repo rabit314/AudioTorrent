@@ -1,5 +1,6 @@
 package com.example.rivulet.ui.torrent
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -114,6 +117,10 @@ fun TorrentScreen(
             }
           }
         },
+        colors = TopAppBarDefaults.topAppBarColors(
+          containerColor = MaterialTheme.colorScheme.background,
+          scrolledContainerColor = MaterialTheme.colorScheme.surface,
+        ),
       )
     },
   ) { padding ->
@@ -234,7 +241,7 @@ fun TorrentScreen(
         }
       }
 
-      HorizontalDivider()
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
       LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -365,7 +372,11 @@ private fun FileRow(
   onToggleDownload: (Boolean) -> Unit,
   onPlay: () -> Unit,
 ) {
-  Card(Modifier.fillMaxWidth()) {
+  Card(
+    modifier = Modifier.fillMaxWidth(),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+  ) {
     Row(
       modifier = Modifier.fillMaxWidth().padding(12.dp),
       verticalAlignment = Alignment.CenterVertically,

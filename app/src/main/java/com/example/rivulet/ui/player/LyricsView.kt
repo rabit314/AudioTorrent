@@ -513,7 +513,12 @@ private fun ReaderAppearanceDialog(
           }
         }
 
-        Text("Reader theme", style = MaterialTheme.typography.labelLarge)
+        Text("Theme", style = MaterialTheme.typography.labelLarge)
+        Text(
+          "Applies across the whole app and reading view.",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Row(
           modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -529,7 +534,7 @@ private fun ReaderAppearanceDialog(
                     .size(14.dp)
                     .clip(CircleShape)
                     .background(p.background)
-                    .border(1.dp, p.accent, CircleShape)
+                    .border(1.2.dp, p.accent, CircleShape)
                 )
               },
               label = { Text(preset.label) },

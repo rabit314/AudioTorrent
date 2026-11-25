@@ -1,7 +1,10 @@
 package com.example.rivulet
 
+import androidx.compose.ui.graphics.luminance
 import com.example.rivulet.data.AudioFile
 import com.example.rivulet.data.lyrics.*
+import com.example.rivulet.theme.ReaderThemePreset
+import com.example.rivulet.theme.appColorSchemeFor
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -215,6 +218,27 @@ class ReadAlongCoreTest {
     val words = timedWords(sentences[9].text + " " + sentences[10].text)
     val matched = matcher.align(words, hintSentence = 8)
     assertEquals(listOf(10L, 11L), matched.map { it.id })
+  }
+
+  @Test fun appColorSchemesPreservePolarityAndContrastAcrossAllPresets() {
+    for (preset in ReaderThemePreset.entries) {
+      val scheme = appColorSchemeFor(preset)
+      val bgLum = scheme.background.luminance()
+      val fgLum = scheme.onBackground.luminance()
+      val containerLum = scheme.primaryContainer.luminance()
+      val onContainerLum = scheme.onPrimaryContainer.luminance()
+      if (preset.isLight) {
+        assertTrue("${preset.name} background should be light", bgLum > 0.5f)
+        assertTrue("${preset.name} text should contrast darker than background", fgLum < 0.1f)
+        assertTrue("${preset.name} onPrimaryContainer should contrast darker than primaryContainer", onContainerLum < containerLum)
+      } else {
+        assertTrue("${preset.name} background should be dark", bgLum < 0.05f)
+        assertTrue("${preset.name} text should contrast lighter than background", fgLum > 0.5f)
+        assertTrue("${preset.name} onPrimaryContainer should contrast lighter than primaryContainer", onContainerLum > containerLum)
+      }
+      assertNotEquals(scheme.primary, scheme.background)
+      assertNotEquals(scheme.surfaceContainerLowest, scheme.primary)
+    }
   }
 
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }

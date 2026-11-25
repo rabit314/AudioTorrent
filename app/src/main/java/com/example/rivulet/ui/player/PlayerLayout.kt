@@ -1,6 +1,7 @@
 package com.example.rivulet.ui.player
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -95,7 +96,10 @@ fun PlayerLayout(
     }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }, actions = {
       IconButton(onClick = onBookmark, enabled = state.hasMedia) { Icon(Icons.Default.BookmarkBorder, "Add bookmark") }
       IconButton(onClick = onQueue, enabled = state.hasMedia) { Icon(Icons.Default.FormatListNumbered, "Chapters and bookmarks") }
-    }, expandedHeight = appBarHeight)
+    }, colors = TopAppBarDefaults.topAppBarColors(
+      containerColor = MaterialTheme.colorScheme.background,
+      scrolledContainerColor = MaterialTheme.colorScheme.surface,
+    ), expandedHeight = appBarHeight)
   }) { insets ->
     BoxWithConstraints(Modifier.fillMaxSize().padding(insets).padding(horizontal = 14.dp)) {
       val landscape = maxWidth >= 480.dp && maxWidth > maxHeight
@@ -105,7 +109,8 @@ fun PlayerLayout(
           panelModifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .border(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f), RoundedCornerShape(18.dp))
             .testTag("player-media")
         ) {
           HorizontalPager(state = pager, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize().testTag("player-pager")) { page ->

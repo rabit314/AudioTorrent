@@ -2,8 +2,10 @@ package com.example.rivulet.ui.library
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -47,11 +50,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,6 +81,8 @@ import com.example.rivulet.data.ListeningHistoryItem
 import com.example.rivulet.data.TorrentUi
 import com.example.rivulet.data.WishlistBook
 import com.example.rivulet.data.audiobookbay.AudioBookItem
+import com.example.rivulet.theme.ReaderThemePreset
+import com.example.rivulet.theme.appColorSchemeFor
 import com.example.rivulet.ui.formatBytes
 import com.example.rivulet.ui.formatDuration
 import com.example.rivulet.ui.formatRate
@@ -95,6 +103,7 @@ fun LibraryScreen(
 ) {
   val torrents by container.engine.torrents.collectAsStateWithLifecycle()
   val playbackState by container.playback.state.collectAsStateWithLifecycle()
+  val readerTheme by container.playback.readAlong.readerPreferences.readerTheme.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
 
@@ -107,6 +116,7 @@ fun LibraryScreen(
 
   var showAddDialog by remember { mutableStateOf(false) }
   var showAboutDialog by remember { mutableStateOf(false) }
+  var showThemeDialog by remember { mutableStateOf(false) }
   var deleteCandidate by remember { mutableStateOf<TorrentUi?>(null) }
   var deleteDiskFiles by remember { mutableStateOf(false) }
   var magnet by remember { mutableStateOf("") }
@@ -206,18 +216,23 @@ fun LibraryScreen(
               contentDescription = "AudioTorrent Icon",
               modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)),
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column {
-              Text("AudioTorrent")
+              Text("AudioTorrent", maxLines = 1, overflow = TextOverflow.Ellipsis)
               Text(
                 "${torrents.size} book${if (torrents.size == 1) "" else "s"} in library · ${formatBytes(totalStorageUsed)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
               )
             }
           }
         },
         actions = {
+          IconButton(onClick = { showThemeDialog = true }) {
+            Icon(Icons.Default.Palette, contentDescription = "App theme")
+          }
           IconButton(onClick = onOpenHistory) {
             Icon(Icons.Default.History, contentDescription = "Listening History")
           }
@@ -225,6 +240,10 @@ fun LibraryScreen(
             Icon(Icons.Default.Search, contentDescription = "Search audiobooks")
           }
         },
+        colors = TopAppBarDefaults.topAppBarColors(
+          containerColor = MaterialTheme.colorScheme.background,
+          scrolledContainerColor = MaterialTheme.colorScheme.surface,
+        ),
       )
     },
     bottomBar = {
@@ -234,8 +253,12 @@ fun LibraryScreen(
             Modifier.fillMaxWidth()
               .clickable(onClick = onOpenPlayer)
               .padding(horizontal = 16.dp, vertical = 8.dp),
+          border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
           colors =
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            CardDefaults.cardColors(
+              containerColor = MaterialTheme.colorScheme.primaryContainer,
+              contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            ),
         ) {
           if (playbackState.durationMs > 0L) {
             val progress = (playbackState.positionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
@@ -243,7 +266,7 @@ fun LibraryScreen(
               progress = { progress },
               modifier = Modifier.fillMaxWidth().height(2.dp),
               color = MaterialTheme.colorScheme.primary,
-              trackColor = MaterialTheme.colorScheme.primaryContainer,
+              trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.18f),
             )
           }
           Row(
@@ -263,6 +286,7 @@ fun LibraryScreen(
               Text(
                 playbackState.title.ifBlank { "Now playing" },
                 style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
               )
@@ -270,7 +294,7 @@ fun LibraryScreen(
                 Text(
                   playbackState.subtitle,
                   style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
                   maxLines = 1,
                   overflow = TextOverflow.Ellipsis,
                 )
@@ -281,6 +305,7 @@ fun LibraryScreen(
               Icon(
                 if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                 contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
               )
             }
           }
@@ -288,7 +313,11 @@ fun LibraryScreen(
       }
     },
     floatingActionButton = {
-      FloatingActionButton(onClick = { showAddDialog = true }) {
+      FloatingActionButton(
+        onClick = { showAddDialog = true },
+        containerColor = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+      ) {
         Icon(Icons.Default.Add, contentDescription = "Add torrent")
       }
     },
@@ -617,6 +646,86 @@ fun LibraryScreen(
       onDismiss = { showAboutDialog = false },
     )
   }
+
+  if (showThemeDialog) {
+    AppThemeDialog(
+      current = readerTheme,
+      onSelect = container.playback.readAlong.readerPreferences::setReaderTheme,
+      onDismiss = { showThemeDialog = false },
+    )
+  }
+}
+
+@Composable
+private fun AppThemeDialog(
+  current: ReaderThemePreset,
+  onSelect: (ReaderThemePreset) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("App theme") },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+          "Applies seamlessly across the library, player, and reading pages.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        ReaderThemePreset.entries.forEach { preset ->
+          val previewScheme = appColorSchemeFor(preset)
+          val selected = preset == current
+          Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(
+              if (selected) 1.25.dp else 0.75.dp,
+              if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+            ),
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onSelect(preset) },
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(28.dp)
+                  .clip(CircleShape)
+                  .background(previewScheme.background)
+                  .border(2.dp, previewScheme.primary, CircleShape),
+                contentAlignment = Alignment.Center,
+              ) {
+                Box(
+                  Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(previewScheme.primary)
+                )
+              }
+              Spacer(Modifier.width(12.dp))
+              Column(Modifier.weight(1f)) {
+                Text(
+                  preset.label,
+                  style = MaterialTheme.typography.bodyMedium,
+                  fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                  color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                  preset.tagline,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+              RadioButton(selected = selected, onClick = { onSelect(preset) })
+            }
+          }
+        }
+      }
+    },
+    confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+  )
 }
 
 @Composable
@@ -630,7 +739,8 @@ private fun HeroContinueListeningCard(
   Card(
     modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
     shape = RoundedCornerShape(16.dp),
-    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
   ) {
     Row(
       modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -706,7 +816,8 @@ private fun HistoryBookCard(
   Card(
     modifier = Modifier.width(100.dp).clickable(onClick = onClick),
     shape = RoundedCornerShape(12.dp),
-    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
   ) {
     Column(modifier = Modifier.padding(8.dp)) {
       Box(
@@ -749,7 +860,8 @@ private fun TrendingBookCard(
   Card(
     modifier = Modifier.width(130.dp),
     shape = RoundedCornerShape(12.dp),
-    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
   ) {
     Column(modifier = Modifier.padding(8.dp)) {
       Box(
@@ -783,13 +895,13 @@ private fun TrendingBookCard(
         if (book.format.isNotBlank()) {
           Surface(
             shape = RoundedCornerShape(4.dp),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+            color = MaterialTheme.colorScheme.primaryContainer,
           ) {
             Text(
               book.format,
               modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
               style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
           }
         }
@@ -812,7 +924,11 @@ private fun TorrentCard(
   onDelete: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  Card(modifier = modifier.fillMaxWidth().clickable(onClick = onClick)) {
+  Card(
+    modifier = modifier.fillMaxWidth().clickable(onClick = onClick),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+  ) {
     Column(Modifier.padding(14.dp)) {
       Row(verticalAlignment = Alignment.Top) {
         if (!torrent.coverUrl.isNullOrBlank()) {
@@ -890,7 +1006,8 @@ private fun WishlistBookCard(
 ) {
   Card(
     modifier = Modifier.width(130.dp),
-    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
   ) {
     Column(modifier = Modifier.padding(8.dp)) {
       Box(

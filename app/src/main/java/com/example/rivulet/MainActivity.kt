@@ -3,15 +3,21 @@ package com.example.rivulet
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.example.rivulet.theme.RivuletTheme
 import kotlinx.coroutines.Dispatchers
@@ -30,10 +36,43 @@ class MainActivity : ComponentActivity() {
       }
     }
 
-    enableEdgeToEdge()
+    val initialLight = container.playback.readAlong.readerPreferences.readerTheme.value.isLight
+    enableEdgeToEdge(
+      statusBarStyle = if (initialLight) {
+        SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+      } else {
+        SystemBarStyle.dark(Color.TRANSPARENT)
+      },
+      navigationBarStyle = if (initialLight) {
+        SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+      } else {
+        SystemBarStyle.dark(Color.TRANSPARENT)
+      },
+    )
     val startInPlayer = intent?.getBooleanExtra("openPlayer", false) ?: false
     setContent {
-      RivuletTheme {
+      val readerTheme by container.playback.readAlong.readerPreferences.readerTheme.collectAsStateWithLifecycle()
+      val isLight = readerTheme.isLight
+      DisposableEffect(isLight) {
+        enableEdgeToEdge(
+          statusBarStyle = if (isLight) {
+            SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+          } else {
+            SystemBarStyle.dark(Color.TRANSPARENT)
+          },
+          navigationBarStyle = if (isLight) {
+            SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+          } else {
+            SystemBarStyle.dark(Color.TRANSPARENT)
+          },
+        )
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+          isAppearanceLightStatusBars = isLight
+          isAppearanceLightNavigationBars = isLight
+        }
+        onDispose {}
+      }
+      RivuletTheme(preset = readerTheme) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
           MainNavigation(container, startInPlayer = startInPlayer)
         }

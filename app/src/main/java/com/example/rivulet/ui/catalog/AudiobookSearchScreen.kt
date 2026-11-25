@@ -1,5 +1,6 @@
 package com.example.rivulet.ui.catalog
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -57,14 +58,27 @@ fun AudiobookSearchScreen(container: AppContainer, onBack: () -> Unit, onOpenTor
     catch (error: Exception) { detailError = error.message ?: "Could not load this recording." }
   }
   Scaffold(modifier = Modifier.safeDrawingPadding(), topBar = {
-    TopAppBar(title = { Text("Search audiobooks") }, navigationIcon = {
-      IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-    })
+    TopAppBar(
+      title = { Text("Search audiobooks") },
+      navigationIcon = {
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+      },
+      colors = TopAppBarDefaults.topAppBarColors(
+        containerColor = MaterialTheme.colorScheme.background,
+        scrolledContainerColor = MaterialTheme.colorScheme.surface,
+      ),
+    )
   }, bottomBar = {
-    if (player.hasMedia) Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenPlayer)) {
+    if (player.hasMedia) Surface(
+      color = MaterialTheme.colorScheme.primaryContainer,
+      contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+      modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenPlayer),
+    ) {
       Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(player.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        TextButton(onClick = container.playback::togglePlayPause) { Text(if (player.isPlaying) "Pause" else "Play") }
+        TextButton(onClick = container.playback::togglePlayPause) {
+          Text(if (player.isPlaying) "Pause" else "Play", color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
       }
     }
   }) { padding ->
@@ -93,7 +107,12 @@ fun AudiobookSearchScreen(container: AppContainer, onBack: () -> Unit, onOpenTor
           TextButton(onClick = { search.retry(source) }) { Text("Retry ${source.label}") }
         } }
         items(state.books, key = { "${it.source}:${it.providerId}" }) { book ->
-          OutlinedCard(onClick = { selected = book }, modifier = Modifier.fillMaxWidth().testTag("audiobook-result")) {
+          OutlinedCard(
+            onClick = { selected = book },
+            colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth().testTag("audiobook-result"),
+          ) {
             Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
               AsyncImage(book.coverUrl, "Cover of ${book.title}", Modifier.size(64.dp, 88.dp), contentScale = ContentScale.Fit)
               Column(Modifier.weight(1f)) {
