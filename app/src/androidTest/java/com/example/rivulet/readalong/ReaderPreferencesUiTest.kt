@@ -130,6 +130,10 @@ class ReaderPreferencesUiTest {
 
       compose.onNodeWithTag("sync-status-pill").performClick()
       compose.onNodeWithText("Synchronization details").assertIsDisplayed()
+      compose.onNodeWithText(SyncMode.EXTENDED.label).performScrollTo().performClick()
+      assertEquals(SyncMode.EXTENDED, ReaderPreferences(activity).syncMode.value)
+      compose.onNodeWithText(SyncMode.FULL_TRACK.label).performScrollTo().performClick()
+      assertEquals(SyncMode.FULL_TRACK, ReaderPreferences(activity).syncMode.value)
       compose.onNodeWithText(SyncMode.PLAYHEAD_ONLY.label).performScrollTo().performClick()
       compose.onNodeWithText("Done").performClick()
       assertEquals(SyncMode.PLAYHEAD_ONLY, ReaderPreferences(activity).syncMode.value)

@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.ComponentCallbacks2
 import android.content.res.Configuration
 import android.net.Uri
-import android.os.BatteryManager
 import android.provider.OpenableColumns
 import android.util.Log
 import com.example.rivulet.ui.player.ReaderParagraph
@@ -540,34 +539,24 @@ class ReadAlongRepository(
     }
   }
 
-  private fun isDeviceCharging(): Boolean = runCatching {
-    val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
-    bm?.isCharging == true
-  }.getOrDefault(false)
-
   private suspend fun nextPendingWindow(track: ReadAlongTrack, bookId: String, base: Long): Long? {
     val mode = readerPreferences.syncMode.value
-    val maxWindowIndex = when {
-      !isPlaying -> 0 // When paused, sync at most the current playhead window so CPU goes idle.
-      mode == SyncMode.PLAYHEAD_ONLY -> 1 // 40s around playhead
-      else -> 8 // Balanced / Charging immediate horizon: 180s (3 minutes)
+    if (!isPlaying) {
+      // When paused, sync at most the current playhead window so CPU goes idle.
+      val ready = if (base < durationMs) withContext(Dispatchers.IO) { store.windowReady(track, bookId, base) } else true
+      return if (ready) null else base
     }
-    val horizonStarts = (0..maxWindowIndex).map { base + it * 20_000L }.filter { it < durationMs }
-    val pending = withContext(Dispatchers.IO) { horizonStarts.filter { !store.windowReady(track, bookId, it) } }
-    Log.d("ReadAlongPerf", "cacheHits=${horizonStarts.size - pending.size} requestedHorizon=${horizonStarts.size} mode=$mode playing=$isPlaying")
-    if (pending.isNotEmpty()) return pending.first()
-
-    if (isPlaying && mode == SyncMode.CHARGING_FULL && isDeviceCharging()) {
-      val totalWindows = (durationMs / 20_000L + 1).toInt()
-      return withContext(Dispatchers.IO) {
-        (0 until totalWindows)
-          .asSequence()
-          .map { it * 20_000L }
-          .filter { it >= base + 180_000L && it < durationMs }
-          .firstOrNull { !store.windowReady(track, bookId, it) }
-      }
+    val horizonCount = mode.horizonWindows(base, durationMs)
+    if (horizonCount <= 0) return null
+    val nextMissing = withContext(Dispatchers.IO) {
+      (0 until horizonCount)
+        .asSequence()
+        .map { base + it * 20_000L }
+        .takeWhile { it < durationMs }
+        .firstOrNull { !store.windowReady(track, bookId, it) }
     }
-    return null
+    Log.d("ReadAlongPerf", "mode=$mode horizon=$horizonCount nextMissing=$nextMissing playing=$isPlaying")
+    return nextMissing
   }
 
   private fun scheduleAnalysis() {
@@ -666,8 +655,7 @@ class ReadAlongRepository(
           val cooldownMs = when {
             !ahead -> 200L
             isImmediate -> 350L
-            readerPreferences.syncMode.value == SyncMode.CHARGING_FULL -> 3_000L
-            else -> 1_800L
+            else -> readerPreferences.syncMode.value.lookaheadCooldownMs
           }
           delay(cooldownMs)
         }
@@ -1002,9 +990,9 @@ class ReadAlongRepository(
     val reason = when {
       isSyncingNow -> null
       !isPlaying -> "Paused"
-      readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY -> "Playhead-only mode"
+      readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s)"
       readerPreferences.syncMode.value == SyncMode.BALANCED -> "Buffered ahead (+3m limit)"
-      readerPreferences.syncMode.value == SyncMode.CHARGING_FULL && !isDeviceCharging() -> "Buffered +3m (plug in for full sync)"
+      readerPreferences.syncMode.value == SyncMode.EXTENDED -> "Buffered ahead (+15m limit)"
       else -> null
     }
     return ReadAlongTimeline.computeSyncCoverage(

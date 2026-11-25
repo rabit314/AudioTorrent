@@ -8,10 +8,49 @@ import com.example.rivulet.theme.ReaderThemePreset
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class SyncMode(val label: String, val summary: String) {
-  PLAYHEAD_ONLY("Playhead only", "Syncs only the current passage (~40s) for minimal battery and heat."),
-  BALANCED("Balanced (+3 min)", "Pre-syncs 3 minutes ahead while playing, then rests at 0% CPU."),
-  CHARGING_FULL("Full track on charger", "Keeps a 3-minute buffer on battery; pre-syncs the track while charging."),
+enum class SyncMode(
+  val label: String,
+  val summary: String,
+  val fixedWindows: Int?,
+  val lookaheadCooldownMs: Long,
+) {
+  PLAYHEAD_ONLY(
+    label = "Playhead",
+    summary = "Syncs only the current passage (~40s) for minimal battery and heat.",
+    fixedWindows = 2,
+    lookaheadCooldownMs = 350L,
+  ),
+  BALANCED(
+    label = "Balanced (+3 min)",
+    summary = "Pre-syncs 3 minutes ahead while playing, then rests at 0% CPU.",
+    fixedWindows = 9,
+    lookaheadCooldownMs = 1_800L,
+  ),
+  EXTENDED(
+    label = "Extended (+15 min)",
+    summary = "Pre-syncs 15 minutes ahead while playing with gentle cooldowns.",
+    fixedWindows = 45,
+    lookaheadCooldownMs = 2_400L,
+  ),
+  FULL_TRACK(
+    label = "Full track",
+    summary = "Pre-syncs ahead through the entire active track (no charger needed).",
+    fixedWindows = null,
+    lookaheadCooldownMs = 3_000L,
+  );
+
+  fun horizonWindows(baseMs: Long, durationMs: Long): Int {
+    if (durationMs <= baseMs) return 0
+    val remaining = ((durationMs - baseMs - 1L) / 20_000L + 1).toInt().coerceAtLeast(1)
+    return fixedWindows?.coerceAtMost(remaining) ?: remaining
+  }
+
+  companion object {
+    fun fromPersisted(raw: String?): SyncMode = when (raw) {
+      "CHARGING_FULL" -> FULL_TRACK
+      else -> entries.firstOrNull { it.name == raw } ?: BALANCED
+    }
+  }
 }
 
 /** App-wide reading & sync preferences; Compose still applies the system's font scale. */
@@ -32,7 +71,7 @@ class ReaderPreferences(context: Context) {
   private val keepScreenState = MutableStateFlow(preferences.getBoolean("keep_screen_on", false))
   val keepScreenOn = keepScreenState.asStateFlow()
 
-  private val syncModeState = MutableStateFlow(enumOrDefault(preferences.getString("sync_mode", null), SyncMode.BALANCED))
+  private val syncModeState = MutableStateFlow(SyncMode.fromPersisted(preferences.getString("sync_mode", null)))
   val syncMode = syncModeState.asStateFlow()
 
   fun setTextSize(value: Int) {

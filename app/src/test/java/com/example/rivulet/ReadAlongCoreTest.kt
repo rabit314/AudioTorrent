@@ -241,6 +241,21 @@ class ReadAlongCoreTest {
     }
   }
 
+  @Test fun syncModesExposeFourTiersAndCorrectLookaheadHorizons() {
+    assertEquals(
+      listOf(SyncMode.PLAYHEAD_ONLY, SyncMode.BALANCED, SyncMode.EXTENDED, SyncMode.FULL_TRACK),
+      SyncMode.entries,
+    )
+    val oneHourMs = 3_600_000L
+    assertEquals(2, SyncMode.PLAYHEAD_ONLY.horizonWindows(0L, oneHourMs))
+    assertEquals(9, SyncMode.BALANCED.horizonWindows(0L, oneHourMs))
+    assertEquals(45, SyncMode.EXTENDED.horizonWindows(0L, oneHourMs))
+    assertEquals(180, SyncMode.FULL_TRACK.horizonWindows(0L, oneHourMs))
+    assertEquals(SyncMode.FULL_TRACK, SyncMode.fromPersisted("CHARGING_FULL"))
+    assertEquals(SyncMode.EXTENDED, SyncMode.fromPersisted("EXTENDED"))
+    assertEquals(SyncMode.BALANCED, SyncMode.fromPersisted("UNKNOWN"))
+  }
+
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }
   private fun audio(index: Int, path: String) = AudioFile(index, path, path.substringAfterLast('/'), 100, 100, true)
 }
