@@ -109,6 +109,8 @@ class ReadAlongCoreTest {
 
   @Test fun siteChallengeAndExpiredSessionRequireInteractiveAccess() {
     assertTrue(ZLibraryClient.needsAccess(503, "<title>Checking your browser ...</title>"))
+    assertTrue(ZLibraryClient.needsAccess(513, "<title>Verifying your browser | DiamWall</title>"))
+    assertTrue(ZLibraryClient.needsAccess(200, "<title>Sign in</title><a href='/login'>Sign in to download</a>"))
     assertTrue(ZLibraryClient.needsAccess(200, "<input type='password'>"))
     assertFalse(ZLibraryClient.needsAccess(200, "<title>Search results</title>"))
   }
@@ -121,6 +123,9 @@ class ReadAlongCoreTest {
     assertEquals("English", books.first().language)
     assertEquals("https://zlib.li/book/123/sample", books.first().url)
     assertNotNull(books.first().isbn)
+
+    val mirrorBooks = ZLibraryClient.parseResults(html, "https://z-library.sk/s/sample")
+    assertEquals("https://z-library.sk/book/123/sample", mirrorBooks.first().url)
   }
 
   @Test fun nativeLookupRejectsLookalikeDomains() {
@@ -238,6 +243,10 @@ class ReadAlongCoreTest {
     assertEquals(SyncBudget(3, 300L), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = runway1x, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
     // >= 90s runway drops to 2 threads + SyncMode cooldown.
     assertEquals(SyncBudget(2, SyncMode.BALANCED.lookaheadCooldownMs), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = 95_000L, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
+    // Paused buffer building sprints to build a 1m..3m cushion instead of starving at 3000ms sleeps.
+    assertEquals(SyncBudget(4, 0L), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = 20_000L, transcribeFullTrack = true, isPlaying = false, syncMode = SyncMode.FULL_TRACK))
+    assertEquals(SyncBudget(3, 300L), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = 120_000L, transcribeFullTrack = false, isPlaying = false, syncMode = SyncMode.EXTENDED))
+    assertEquals(SyncBudget(2, SyncMode.EXTENDED.lookaheadCooldownMs), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = 200_000L, transcribeFullTrack = false, isPlaying = false, syncMode = SyncMode.EXTENDED))
     // Decode bounds: 23s narration vs 24s script.
     assertEquals(18_500L to 23_000L, SyncScheduler.windowDecodeBounds(20_000L, 40_000L, 100_000L, isScript = false))
     assertEquals(18_000L to 24_000L, SyncScheduler.windowDecodeBounds(20_000L, 40_000L, 100_000L, isScript = true))

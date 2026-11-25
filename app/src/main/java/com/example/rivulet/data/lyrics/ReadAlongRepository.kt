@@ -65,7 +65,7 @@ class ReadAlongRepository(
     val query: String, val title: String, val author: String, var titleOnly: Boolean = false,
     val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet(), val provider: TextProvider = TextProvider.AUTOMATIC,
     var prewarmAttempted: Boolean = false)
-  private data class AutomaticResult(val editions: List<BookEdition>, val message: String?)
+  private data class AutomaticResult(val editions: List<BookEdition>, val message: String?, val accessUrl: String? = null)
   private val automaticAttempts = mutableMapOf<String, AutomaticResult?>()
   private data class Download(val track: ReadAlongTrack, val version: Long, val edition: BookEdition, val indices: Set<Int>)
   private var pendingDownload: Download? = null
@@ -190,6 +190,7 @@ class ReadAlongRepository(
           selectedHint = null
           timings = structured.associateByTo(LinkedHashMap()) { it.id }
           cachedParagraphs = initialParagraphs
+          transcribeFullTrack = (readerPreferences.syncMode.value == SyncMode.FULL_TRACK)
           val matched = structured.size
           val coverage = buildCoverageStats(matched, isSyncingNow = false)
           val syncProg = coverage.trackTimedRatio.takeIf { it > 0f }
@@ -264,6 +265,10 @@ class ReadAlongRepository(
 
   fun setSyncMode(mode: SyncMode) {
     readerPreferences.setSyncMode(mode)
+    if (source?.source == TextSyncSource.WHISPER_SCRIPT) {
+      transcribeFullTrack = (mode == SyncMode.FULL_TRACK)
+      mutable.update { it.copy(transcribingFullTrack = transcribeFullTrack) }
+    }
     exhaustedBase = null
     bufferRetryJob?.cancel()
     if (analysisJob?.isActive == true) {
@@ -271,6 +276,7 @@ class ReadAlongRepository(
       analysisJob = null
       analysisSequence++
     }
+    publishCoverageOnly(isSyncingNow = false)
     scheduleAnalysis()
   }
 
@@ -279,11 +285,11 @@ class ReadAlongRepository(
   fun isUsingLegacySpeechModel(): Boolean = models.isUsingLegacyFallback(readerPreferences.speechModelTier.value)
 
   fun setSpeechModelTier(tier: SpeechModelTier) {
-    readerPreferences.setSpeechModelTier(tier)
-    measuredSyncSpeedRatio = null
-    exhaustedBase = null
-    bufferRetryJob?.cancel()
     if (models.isDownloaded(tier)) {
+      readerPreferences.setSpeechModelTier(tier)
+      measuredSyncSpeedRatio = null
+      exhaustedBase = null
+      bufferRetryJob?.cancel()
       if (analysisJob?.isActive == true) {
         analysisJob?.cancel()
         analysisJob = null
@@ -369,9 +375,26 @@ class ReadAlongRepository(
     val key = listOf(track.infoHash, selectedTracks.sorted().joinToString(","),
       ReadAlongText.tokens(identity.title).joinToString(" "), ReadAlongText.tokens(identity.author).sorted().joinToString(" ")).joinToString("\n")
     if (automaticAttempts.containsKey(key)) {
-      automaticAttempts[key]?.let { saved -> mutable.update { it.copy(editions = saved.editions,
-        choosingEdition = saved.editions.isNotEmpty(), lookupMessage = saved.message) } }
-      return
+      val saved = automaticAttempts[key]
+      if (saved != null) {
+        if (saved.accessUrl != null && (library is GutenbergFirstCatalog || library is ZLibraryClient) &&
+          ZLibraryPrewarmer.hasClearanceCookie(saved.accessUrl)
+        ) {
+          automaticAttempts.remove(key)
+        } else {
+          mutable.update {
+            it.copy(
+              editions = saved.editions,
+              choosingEdition = saved.editions.isNotEmpty(),
+              lookupMessage = saved.message,
+              accessUrl = saved.accessUrl,
+            )
+          }
+          return
+        }
+      } else {
+        return
+      }
     }
     automaticAttempts[key] = null
     searchBooks(identity.query, title = identity.title, author = identity.author, automaticKey = key, selectedTracks = selectedTracks)
@@ -421,21 +444,19 @@ class ReadAlongRepository(
             return
           }
           finishLookup(search, results, outcome)
+          outcome.accessUrl?.let { targetUrl ->
+            triggerPrewarmRetry(search, targetUrl)
+          }
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
         if (lookupCurrent(search)) {
-          search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(emptyList(), error.message) }
-          mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error is SiteAccessRequired && !search.prewarmAttempted) {
-            search.prewarmAttempted = true
-            ZLibraryPrewarmer.warmUp(context, forceRefresh = true) { success ->
-              if (success && lookupCurrent(search) && mutable.value.accessUrl != null) {
-                mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Loading books…") }
-                lookupJob = scope.launch { runLookup(search) }
-              }
-            }
-          } else if (error !is SiteAccessRequired) {
+          val accessUrl = (error as? SiteAccessRequired)?.url
+          search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(emptyList(), error.message, accessUrl) }
+          mutable.update { it.copy(searching = false, accessUrl = accessUrl, lookupMessage = error.message) }
+          if (error is SiteAccessRequired) {
+            triggerPrewarmRetry(search, error.url)
+          } else {
             offerRecovery(search.track, search.version, "Retry search") {
               searchBooks(search.query, force = true, title = search.title, author = search.author,
                 automaticKey = search.automaticKey, selectedTracks = search.selectedTracks, provider = search.provider)
@@ -445,6 +466,19 @@ class ReadAlongRepository(
       }
   }
 
+  private fun triggerPrewarmRetry(search: Lookup, targetUrl: String) {
+    if (library !is GutenbergFirstCatalog && library !is ZLibraryClient) return
+    if (search.prewarmAttempted) return
+    search.prewarmAttempted = true
+    ZLibraryPrewarmer.warmUp(context, forceRefresh = true, targetUrl = targetUrl) { success ->
+      if (success && lookupCurrent(search) && mutable.value.accessUrl != null) {
+        search.automaticKey?.let { automaticAttempts.remove(it) }
+        mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Loading books…") }
+        lookupJob = scope.launch { runLookup(search) }
+      }
+    }
+  }
+
   private fun finishLookup(search: Lookup, results: List<BookEdition>, outcome: BookLookupResult = BookLookupResult(results)) {
     if (!lookupCurrent(search)) return
     searchSucceeded = outcome.complete
@@ -452,7 +486,7 @@ class ReadAlongRepository(
     val message = outcome.message ?: if (results.isEmpty()) "No editions found. Try a different title or import your ebook."
       else if (search.automaticKey != null) "Choose the edition that matches your audiobook."
       else if (search.titleOnly) "Results for ${search.title} (title only)." else null
-    search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(searchResults, message) }
+    search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(searchResults, message, outcome.accessUrl) }
     mutable.update { it.copy(searching = false, accessUrl = outcome.accessUrl, editions = searchResults,
       choosingEdition = search.automaticKey != null && results.isNotEmpty(), lookupMessage = message) }
     if (search.automaticKey != null) {
@@ -557,10 +591,13 @@ class ReadAlongRepository(
     val currentSource = source?.source
     if (enabled && currentSource != TextSyncSource.WHISPER_SCRIPT) return
     transcribeFullTrack = enabled
+    if (!enabled && readerPreferences.syncMode.value == SyncMode.FULL_TRACK) {
+      readerPreferences.setSyncMode(SyncMode.BALANCED)
+    }
     exhaustedBase = null
     mutable.update { it.copy(transcribingFullTrack = enabled) }
     if (!enabled) {
-      if (analysisJob?.isActive == true && (!isPlaying || !visible)) {
+      if (analysisJob?.isActive == true && (!visible || (!isPlaying && readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY))) {
         analysisJob?.cancel()
         analysisJob = null
         analysisSequence++
@@ -594,8 +631,8 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         if (current(track, version) && request == lookupSequence) {
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error is SiteAccessRequired && !prewarmed) {
-            ZLibraryPrewarmer.warmUp(context, forceRefresh = true) { success ->
+          if (error is SiteAccessRequired && !prewarmed && (library is GutenbergFirstCatalog || library is ZLibraryClient)) {
+            ZLibraryPrewarmer.warmUp(context, forceRefresh = true, targetUrl = edition.url) { success ->
               if (success && current(track, version) && request == lookupSequence && mutable.value.accessUrl != null) {
                 mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Downloading…") }
                 downloadEdition(edition, selectedTracks, renderedHtml, prewarmed = true)
@@ -613,14 +650,18 @@ class ReadAlongRepository(
     if (expectedTrack != mutable.value.track) return
     val download = pendingDownload
     if (download != null && current(download.track, download.version)) {
-      // A login flow can finish on a different page. Re-fetch the edition unless this is its page.
-      val editionPage = url.substringBefore('?').trimEnd('/') == download.edition.url.substringBefore('?').trimEnd('/')
+      // A login flow can finish on a different page. Re-fetch the edition unless this is its page or carries a /dl/ link.
+      val editionPage = url.substringBefore('?').trimEnd('/') == download.edition.url.substringBefore('?').trimEnd('/') ||
+        html.contains("/dl/", ignoreCase = true) || html.contains("/download/", ignoreCase = true)
       downloadEdition(download.edition, download.indices, html.takeIf { editionPage })
     } else {
       val search = lookup ?: return
       if (!lookupCurrent(search)) return
-      if (url.contains("/s/")) acceptRenderedSearch(html, url, expectedTrack)
-      else {
+      if (url.contains("/s/") || html.contains("<z-bookcard", ignoreCase = true) || html.contains("resItemBox", ignoreCase = true)) {
+        acceptRenderedSearch(html, url, expectedTrack)
+      } else if (ZLibraryClient.needsAccess(200, html)) {
+        mutable.update { it.copy(accessUrl = url, searching = false, lookupMessage = "Complete the browser verification or sign in to continue.") }
+      } else {
         mutable.update { it.copy(accessUrl = null, searching = true) }
         lookupJob = scope.launch { runLookup(search) }
       }
@@ -631,7 +672,18 @@ class ReadAlongRepository(
     if (expectedTrack != mutable.value.track) return
     val search = lookup ?: return
     if (!lookupCurrent(search)) return
-    val parsed = searchResults.filter { it.provider == TextProvider.GUTENBERG } + ZLibraryClient.parseResults(html, url)
+    val zResults = ZLibraryClient.parseResults(html, url)
+    if (zResults.isEmpty() && ZLibraryClient.needsAccess(200, html)) {
+      mutable.update {
+        it.copy(
+          searching = false,
+          accessUrl = url,
+          lookupMessage = "Complete the browser verification or sign in on the page first.",
+        )
+      }
+      return
+    }
+    val parsed = searchResults.filter { it.provider == TextProvider.GUTENBERG } + zResults
     if (shouldBroaden(search, parsed)) {
       search.titleOnly = true
       mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Trying the book title without the author…") }
@@ -803,6 +855,10 @@ class ReadAlongRepository(
     }
   }
 
+  private fun isFullTrackMode(bookSource: TextSyncSource? = source?.source): Boolean =
+    readerPreferences.syncMode.value == SyncMode.FULL_TRACK ||
+      (transcribeFullTrack && bookSource == TextSyncSource.WHISPER_SCRIPT)
+
   private suspend fun nextPendingWindow(
     track: ReadAlongTrack,
     bookId: String,
@@ -810,14 +866,14 @@ class ReadAlongRepository(
     minStartMs: Long = 0L,
   ): Long? {
     val mode = readerPreferences.syncMode.value
-    val fullTrackScript = transcribeFullTrack && source?.source == TextSyncSource.WHISPER_SCRIPT
-    if (!isPlaying && !fullTrackScript) {
+    val fullTrack = isFullTrackMode()
+    if (!isPlaying && !fullTrack && mode == SyncMode.PLAYHEAD_ONLY) {
       if (minStartMs > base) return null
-      // When paused, sync at most the current playhead window so CPU goes idle.
+      // Playhead mode syncs only the active window when paused so CPU returns to idle.
       val ready = if (base < durationMs) withContext(Dispatchers.IO) { store.windowReady(track, bookId, base) } else true
       return if (ready) null else base
     }
-    if (fullTrackScript) {
+    if (fullTrack) {
       return withContext(Dispatchers.IO) {
         val alignedBase = base.coerceAtLeast(0L)
         val scanStart = maxOf(alignedBase, minStartMs)
@@ -850,12 +906,12 @@ class ReadAlongRepository(
     val book = source ?: return
     val track = mutable.value.track ?: return
     val isScript = book.source == TextSyncSource.WHISPER_SCRIPT
-    val keepRunningBackground = transcribeFullTrack && isScript
+    val keepRunningBackground = isFullTrackMode(book.source)
     if ((!visible && !keepRunningBackground) || !playbackReady || estimated || mutable.value.correction.isEditing ||
       correctionJob?.isActive == true || (book.source != TextSyncSource.NARRATION && !isScript) || durationMs <= 0 ||
       loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
     if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
-    if (exhaustedBase == windowBase() && isPlaying && !keepRunningBackground) return
+    if (exhaustedBase == windowBase() && !keepRunningBackground) return
     bufferRetryJob?.cancel()
     val version = generation
     val request = ++analysisSequence
@@ -864,7 +920,7 @@ class ReadAlongRepository(
       var prefetchedStart: Long? = null
       var prefetchJob: Deferred<Pair<Long, Result<FloatArray>>>? = null
       try {
-        while (isActive && (visible || (transcribeFullTrack && isScript)) && valid()) {
+        while (isActive && (visible || isFullTrackMode(book.source)) && valid()) {
           val base = windowBase()
           val start = nextPendingWindow(track, book.id, base)
           if (!valid()) return@launch
@@ -928,11 +984,11 @@ class ReadAlongRepository(
             ahead = ahead,
             isImmediate = isImmediate,
             effectiveAheadWallMs = effectiveAheadWallMs,
-            transcribeFullTrack = transcribeFullTrack,
+            transcribeFullTrack = isFullTrackMode(book.source),
             isPlaying = isPlaying,
             syncMode = readerPreferences.syncMode.value,
           )
-          if (ahead && (isPlaying || transcribeFullTrack) && budget.cooldownMs <= 500L && valid()) {
+          if (ahead && budget.cooldownMs <= 500L && valid()) {
             val nextStart = nextPendingWindow(track, book.id, base, minStartMs = start + 20_000L)
             if (nextStart != null && valid()) {
               val nextEnd = minOf(nextStart + 20_000L, durationMs)
@@ -1080,10 +1136,11 @@ class ReadAlongRepository(
               if (!valid()) return
               val words = recognized.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
               val activeMatcher = matcher
-              val hint = selectedHint ?: lastMatchedSentenceHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
+              val wrappedBack = start < windowBase()
+              val hint = if (wrappedBack) null else selectedHint ?: lastMatchedSentenceHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
               val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
               if (!valid()) return
-              if (matched.isNotEmpty()) {
+              if (!wrappedBack && matched.isNotEmpty()) {
                 val lastId = matched.last().id
                 val matchedIdx = sentences.indexOfFirst { it.id == lastId }
                 if (matchedIdx >= 0) lastMatchedSentenceHint = matchedIdx
@@ -1158,11 +1215,11 @@ class ReadAlongRepository(
                 syncCoverage = buildCoverageStats(it.matchedSentences, isSyncingNow = false, overrideReason = "Waiting for torrent download ahead"),
               )
             }
-            if (isPlaying && visible) {
+            if (visible || isFullTrackMode(book.source)) {
               bufferRetryJob?.cancel()
               bufferRetryJob = scope.launch {
                 delay(5_000L)
-                if (current(track, version) && isPlaying && exhaustedBase == retryBase) {
+                if (current(track, version) && exhaustedBase == retryBase) {
                   exhaustedBase = null
                   scheduleAnalysis()
                 }
@@ -1512,13 +1569,18 @@ class ReadAlongRepository(
     isSyncingNow: Boolean,
     overrideReason: String? = null,
   ): SyncCoverageStats {
+    val mode = readerPreferences.syncMode.value
+    val fullTrack = isFullTrackMode()
     val reason = overrideReason ?: when {
       isSyncingNow -> null
-      !isPlaying && !transcribeFullTrack -> "Paused"
-      transcribeFullTrack -> null
-      readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s)"
-      readerPreferences.syncMode.value == SyncMode.BALANCED -> "Buffered ahead (+3m limit)"
-      readerPreferences.syncMode.value == SyncMode.EXTENDED -> "Buffered ahead (+15m limit)"
+      !isPlaying && !fullTrack && mode == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s) · Paused"
+      !isPlaying && fullTrack -> "Full track synced · Paused"
+      !isPlaying && mode == SyncMode.BALANCED -> "Buffered ahead (+3m) · Paused"
+      !isPlaying && mode == SyncMode.EXTENDED -> "Buffered ahead (+15m) · Paused"
+      fullTrack -> "Full track synced"
+      mode == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s)"
+      mode == SyncMode.BALANCED -> "Buffered ahead (+3m limit)"
+      mode == SyncMode.EXTENDED -> "Buffered ahead (+15m limit)"
       else -> null
     }
     return ReadAlongTimeline.computeSyncCoverage(

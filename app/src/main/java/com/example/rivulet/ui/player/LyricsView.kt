@@ -222,6 +222,14 @@ fun LyricsView(
     if (bookIdentityReady && isVisible) repository.ensureBookText(BookIdentity(cleanBookTitle, searchAuthor), selectedTracks, bookIdentityTrack ?: state.track)
     if (state.bookId != null && state.phase != ReadAlongPhase.LOADING && !state.searching) showSearch = false
   }
+  LaunchedEffect(isVisible, bookIdentityReady, state.track, state.bookId, state.source, state.phase) {
+    if (isVisible && bookIdentityReady && state.bookId != null &&
+      (state.source == TextSyncSource.NARRATION || state.isScriptSource) &&
+      state.phase != ReadAlongPhase.LOADING
+    ) {
+      onPrepareAudioForScript()
+    }
+  }
   LaunchedEffect(state.choosingEdition) { if (state.choosingEdition) showSearch = true }
   LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
   LaunchedEffect(dragged) { if (dragged) following = false }
@@ -393,6 +401,7 @@ fun LyricsView(
         showAhead = false,
         compactLookup = state.bookId == null,
         modelSizeMb = speechModelTier.approximateMb,
+        onDownloadModelTier = repository::downloadModelTier,
         textColor = palette.mutedText,
       )
     }
@@ -498,7 +507,15 @@ fun LyricsView(
         TextProvider.entries.forEach { provider -> FilterChip(textProvider == provider, { textProvider = provider; search() }, label = { Text(provider.label) }) }
       }
       TextButton(onClick = { search() }) { Text("Search") }
-      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, modelSizeMb = speechModelTier.approximateMb)
+      ReadAlongStatus(
+        state,
+        repository::retry,
+        importFile,
+        repository::downloadModel,
+        { showAccess = true },
+        modelSizeMb = speechModelTier.approximateMb,
+        onDownloadModelTier = repository::downloadModelTier,
+      )
       if (state.editions.isEmpty() || state.accessUrl != null) {
         TextButton(onClick = startScriptGeneration, modifier = Modifier.testTag("dialog-generate-script")) {
           Text("No ebook found? Generate script from audio")
@@ -909,13 +926,13 @@ private fun SyncCoverageDialog(
             Column(Modifier.weight(1f)) {
               Text("Transcribe entire track", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
               Text(
-                if ((cov?.trackDurationMs ?: 0L) >= 3_600_000L) "Continues even while paused with thermal cooldowns."
-                else "Runs across all downloaded audio in this track, even while paused.",
+                if ((cov?.trackDurationMs ?: 0L) >= 3_600_000L) "Runs across the full track while paused or on Cover with thermal cooldowns."
+                else "Runs across the entire track while paused or on Cover; synced with Full track mode.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
               )
             }
-            Switch(checked = state.transcribingFullTrack, onCheckedChange = onToggleFullTrack)
+            Switch(checked = state.transcribingFullTrack || syncMode == SyncMode.FULL_TRACK, onCheckedChange = onToggleFullTrack)
           }
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -934,7 +951,7 @@ private fun SyncCoverageDialog(
           HorizontalDivider()
           Text("Speech model", style = MaterialTheme.typography.labelLarge)
           Text(
-            if (isUsingLegacyModel) "Active engine: $activeModelTag (legacy model installed)"
+            if (isUsingLegacyModel) "Active engine: $activeModelTag (legacy model — get Fast 44 MB for >1× speed or Accurate v2 82 MB)"
             else "Active engine: $activeModelTag",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1123,6 +1140,7 @@ fun ReadAlongStatus(
   showAhead: Boolean = true,
   compactLookup: Boolean = false,
   modelSizeMb: Int = SpeechModelTier.FAST.approximateMb,
+  onDownloadModelTier: ((SpeechModelTier) -> Unit)? = null,
   textColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
   val hasLookupNotice = state.lookupMessage != null || state.accessUrl != null ||
@@ -1179,7 +1197,20 @@ fun ReadAlongStatus(
       if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
     }
     if (state.preparingAhead && showAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall, color = textColor)
-    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · $modelSizeMb MB") }
+    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) {
+      if (onDownloadModelTier != null) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          TextButton(onClick = { onDownloadModelTier(SpeechModelTier.FAST) }) {
+            Text("Download Fast · ${SpeechModelTier.FAST.approximateMb} MB")
+          }
+          TextButton(onClick = { onDownloadModelTier(SpeechModelTier.ACCURATE) }) {
+            Text("Accurate · ${SpeechModelTier.ACCURATE.approximateMb} MB")
+          }
+        }
+      } else {
+        TextButton(onClick = onDownloadModel) { Text("Download speech model · $modelSizeMb MB") }
+      }
+    }
   }
 }
 

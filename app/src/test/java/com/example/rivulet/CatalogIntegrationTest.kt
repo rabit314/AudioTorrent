@@ -208,10 +208,13 @@ class CatalogIntegrationTest {
 
   @Test fun gutenberg503ReportsMaintenanceAndZLibCTokenChallengeRequestsAccess() {
     assertTrue(ZLibraryClient.needsAccess(503, "<html><title>Checking your browser ...</title><script>document.cookie='c_token=abc';</script></html>"))
+    assertTrue(ZLibraryClient.needsAccess(513, "<html><title>Verifying your browser | DiamWall</title></html>"))
     assertFalse(ZLibraryClient.needsAccess(200, "<html><title>Z-Library</title><body>Books</body></html>"))
     assertTrue(ZLibraryPrewarmer.hasClearanceToken("bsrv=1; c_token=pow123; c_time=99"))
     assertTrue(ZLibraryPrewarmer.hasClearanceToken("cf_clearance=xyz"))
     assertTrue(ZLibraryPrewarmer.hasClearanceToken("remix_userkey=u1"))
+    assertTrue(ZLibraryPrewarmer.hasClearanceToken("diamwall=dw1"))
+    assertTrue(ZLibraryPrewarmer.isChallengeTitle("Verifying your browser | DiamWall"))
     assertFalse(ZLibraryPrewarmer.hasClearanceToken("bsrv=only_session; c_token="))
 
     val transport = OkHttpClient.Builder().addInterceptor { chain ->

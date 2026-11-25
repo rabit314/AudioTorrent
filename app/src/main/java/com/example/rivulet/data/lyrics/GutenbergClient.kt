@@ -76,10 +76,15 @@ class GutenbergClient : GutenbergCatalog {
 class GutenbergFirstCatalog(
   private val gutenberg: BookCatalog = GutenbergClient(),
   private val fallback: BookCatalog = ZLibraryClient(
-    cookies = { android.webkit.CookieManager.getInstance().getCookie(it) },
+    cookies = { url ->
+      runCatching {
+        android.webkit.CookieManager.getInstance().apply { setAcceptCookie(true) }.getCookie(url)
+      }.getOrNull()
+    },
     saveCookies = { url, headers ->
       runCatching {
         val cm = android.webkit.CookieManager.getInstance()
+        cm.setAcceptCookie(true)
         headers.forEach { header -> cm.setCookie(url, header) }
         cm.flush()
       }

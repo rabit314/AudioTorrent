@@ -56,7 +56,12 @@ internal object SyncScheduler {
     syncMode: SyncMode,
   ): SyncBudget = when {
     !ahead -> SyncBudget(threads = 4, cooldownMs = 0L)
-    transcribeFullTrack && !isPlaying -> SyncBudget(threads = 2, cooldownMs = SyncMode.FULL_TRACK.lookaheadCooldownMs)
+    !isPlaying -> when {
+      isImmediate || effectiveAheadWallMs < 60_000L -> SyncBudget(threads = 4, cooldownMs = 0L)
+      effectiveAheadWallMs < 180_000L -> SyncBudget(threads = 3, cooldownMs = 300L)
+      transcribeFullTrack -> SyncBudget(threads = 2, cooldownMs = SyncMode.FULL_TRACK.lookaheadCooldownMs)
+      else -> SyncBudget(threads = 2, cooldownMs = syncMode.lookaheadCooldownMs)
+    }
     isImmediate || effectiveAheadWallMs < 45_000L -> SyncBudget(threads = 4, cooldownMs = 0L)
     effectiveAheadWallMs < 90_000L -> SyncBudget(threads = 3, cooldownMs = 300L)
     transcribeFullTrack -> SyncBudget(threads = 2, cooldownMs = SyncMode.FULL_TRACK.lookaheadCooldownMs)

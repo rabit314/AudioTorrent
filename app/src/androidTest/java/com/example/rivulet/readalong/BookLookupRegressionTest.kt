@@ -107,4 +107,37 @@ class BookLookupRegressionTest {
     } finally { metadata.remove(hash) }
     assertNull(BookCatalogMetadata(context).title(hash))
   }
+
+  @Test fun automaticAccessUrlSurvivesViewSwitchAndIncompleteChallengeStaysInAccessState() = runBlocking {
+    val name = "access-persist-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name)
+    val catalog = object : BookCatalog {
+      override fun search(query: String): List<BookEdition> = emptyList()
+      override fun lookup(request: BookLookupRequest) = BookLookupResult(
+        editions = emptyList(),
+        message = "Z-Library needs a browser access check or login.",
+        accessUrl = "https://z-library.sk/s/Public",
+        complete = false,
+      )
+      override fun download(edition: BookEdition, renderedHtml: String?) = error("Unused")
+    }
+    val repo = ReadAlongRepository(context, ReadAlongStore(db), AudioWindowDecoder { error("Unused") }, library = catalog)
+    val track = ReadAlongTrack("access-persist", 0)
+    val identity = BookIdentity("Public Book", "Author Name")
+    try {
+      withContext(Dispatchers.Main) { repo.activate(track); repo.setVisible(true) }
+      withTimeout(5000) { repo.state.first { it.phase == ReadAlongPhase.EMPTY } }
+      withContext(Dispatchers.Main) { repo.ensureBookText(identity, setOf(0), track) }
+      withTimeout(5000) { repo.state.first { it.accessUrl == "https://z-library.sk/s/Public" } }
+      withContext(Dispatchers.Main) {
+        repo.acceptRenderedSearch("<html><title>Verifying your browser | DiamWall</title></html>", "https://z-library.sk/s/Public", track)
+      }
+      assertEquals("https://z-library.sk/s/Public", repo.state.value.accessUrl)
+      withContext(Dispatchers.Main) {
+        repo.setVisible(false)
+        repo.setVisible(true)
+        repo.ensureBookText(identity, setOf(0), track)
+      }
+      assertEquals("https://z-library.sk/s/Public", repo.state.value.accessUrl)
+    } finally { withContext(Dispatchers.Main) { repo.close() }; db.close(); context.deleteDatabase(name) }
+  }
 }

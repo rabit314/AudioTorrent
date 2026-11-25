@@ -153,9 +153,14 @@ class GeneratedScriptTest {
       override fun download(edition: BookEdition, renderedHtml: String?) = error("Unused")
     }
     val speechGate = CompletableDeferred<Unit>()
+    val speechCalls = java.util.concurrent.atomic.AtomicInteger()
     val speech = SpeechRecognizer { _, _ ->
       speechGate.await()
-      listOf(SpeechWord(" Generated", 2_500, 3_000), SpeechWord(" line.", 3_050, 3_600))
+      if (speechCalls.incrementAndGet() == 1) {
+        listOf(SpeechWord(" Generated", 2_500, 3_000), SpeechWord(" line.", 3_050, 3_600))
+      } else {
+        listOf(SpeechWord(" Second", 2_500, 3_000), SpeechWord(" window.", 3_050, 3_600))
+      }
     }
     val repo = ReadAlongRepository(context, ReadAlongStore(db), ReadAlongAudioDecoder { _, _, _ -> FloatArray(1600) }, speech, models, blockedCatalog)
     val hash = "script-ui-${UUID.randomUUID()}"
@@ -273,6 +278,46 @@ class GeneratedScriptTest {
       assertTrue(remaining.none { it.id == 999L })
       assertTrue(remaining.any { it.text == "And then Elijah opened the door." })
     } finally {
+      main { repo.close() }
+      db.close()
+      context.deleteDatabase(dbName)
+      files.deleteRecursively()
+      BookCatalogMetadata(context).remove(hash)
+    }
+  }
+
+  @Test fun fullTrackSyncModeDrivesPausedScriptCompletionWithoutSeparateSwitch() = runBlocking {
+    val dbName = "mode-full-script-${UUID.randomUUID()}.db"
+    val db = TorrentDatabase(context, dbName)
+    val store = ReadAlongStore(db)
+    val files = File(context.cacheDir, "mode-full-script-${UUID.randomUUID()}")
+    val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
+    models.file.parentFile!!.mkdirs(); models.file.writeBytes(byteArrayOf(1))
+    val hash = "mode-full-script-${UUID.randomUUID()}"
+    val speech = SpeechRecognizer { _, _ ->
+      listOf(SpeechWord(" Spoken", 2_500, 3_000), SpeechWord(" line.", 3_050, 3_500))
+    }
+    val repo = ReadAlongRepository(context, store, ReadAlongAudioDecoder { _, _, _ -> FloatArray(1600) }, speech, models)
+    val prefs = repo.readerPreferences
+    val prevMode = prefs.syncMode.value
+    try {
+      val track = ReadAlongTrack(hash, 0)
+      main {
+        prefs.setSyncMode(SyncMode.BALANCED)
+        repo.activate(track)
+        repo.playback(25_000, 45_000, track, prepared = true, isPlaying = false)
+        repo.setVisible(false)
+        repo.generateScriptFromAudio("SyncMode Full Test", "Track 1", track)
+      }
+      eventually { repo.state.value.source == TextSyncSource.WHISPER_SCRIPT }
+      main { repo.setSyncMode(SyncMode.FULL_TRACK) }
+      eventually {
+        store.windowReady(track, "script:$hash:0", 0) &&
+          store.windowReady(track, "script:$hash:0", 20_000) &&
+          store.windowReady(track, "script:$hash:0", 40_000)
+      }
+    } finally {
+      prefs.setSyncMode(prevMode)
       main { repo.close() }
       db.close()
       context.deleteDatabase(dbName)

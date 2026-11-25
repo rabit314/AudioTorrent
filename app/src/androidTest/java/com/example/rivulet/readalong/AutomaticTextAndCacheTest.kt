@@ -285,4 +285,65 @@ class AutomaticTextAndCacheTest {
       assertTrue(store.windowReady(track, "public-book", 1_600_000))
     } finally { main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively() }
   }
+
+  @Test fun pausedLookaheadHonorsSyncModesAcrossTiersAndFullTrackWorksInBackground() = runBlocking {
+    val name = "paused-tiers-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name); val store = ReadAlongStore(db)
+    val files = File(context.cacheDir, "paused-tiers-${UUID.randomUUID()}")
+    val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
+    models.fastFile.parentFile!!.mkdirs(); models.fastFile.writeBytes(byteArrayOf(1))
+    models.accurateFile.writeBytes(byteArrayOf(2))
+    val prefs = ReaderPreferences(context); val previousMode = prefs.syncMode.value; val previousTier = prefs.speechModelTier.value
+    val observedModels = CopyOnWriteArrayList<String>()
+    val r = ReadAlongRepository(
+      context,
+      store,
+      ReadAlongAudioDecoder { _, _, _ -> FloatArray(1600) },
+      speech = object : SpeechRecognizer {
+        override suspend fun transcribe(model: File, pcm: FloatArray) = emptyList<SpeechWord>()
+        override suspend fun transcribe(model: File, pcm: FloatArray, nThreads: Int): List<SpeechWord> {
+          observedModels.add(model.name)
+          return emptyList()
+        }
+        override suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, nThreads: Int, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> {
+          observedModels.add(model.name)
+          onPartial(emptyList())
+          return emptyList()
+        }
+      },
+      models = models,
+    )
+    try {
+      store.attach(track, book(), setOf(3))
+      main {
+        r.setSpeechModelTier(SpeechModelTier.FAST)
+        r.setSyncMode(SyncMode.PLAYHEAD_ONLY)
+        r.activate(track, 0, 80_000)
+        r.setVisible(true)
+      }
+      loaded(r)
+      // Paused in PLAYHEAD_ONLY syncs only window 0 and goes idle.
+      main { r.playback(0, 80_000, track, prepared = true, isPlaying = false) }
+      eventually { store.windowReady(track, "public-book", 0) && r.state.value.syncCoverage?.isSyncingNow == false }
+      delay(120)
+      assertFalse(store.windowReady(track, "public-book", 20_000))
+
+      // Switching to BALANCED while still paused syncs the ahead windows cleanly using ACCURATE tier too.
+      main { r.setSpeechModelTier(SpeechModelTier.ACCURATE); r.setSyncMode(SyncMode.BALANCED) }
+      eventually {
+        store.windowReady(track, "public-book", 20_000) &&
+          store.windowReady(track, "public-book", 40_000) &&
+          store.windowReady(track, "public-book", 60_000)
+      }
+      assertTrue(observedModels.contains(SpeechModelTier.FAST.fileName))
+      assertTrue(observedModels.contains(SpeechModelTier.ACCURATE.fileName))
+
+      // Switching to FULL_TRACK while hidden (Cover tab) and paused completes remaining windows.
+      main { r.setVisible(false); r.playback(0, 100_000, track, prepared = true, isPlaying = false); r.setSyncMode(SyncMode.FULL_TRACK) }
+      eventually { store.windowReady(track, "public-book", 80_000) }
+    } finally {
+      prefs.setSyncMode(previousMode)
+      prefs.setSpeechModelTier(previousTier)
+      main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively()
+    }
+  }
 }
