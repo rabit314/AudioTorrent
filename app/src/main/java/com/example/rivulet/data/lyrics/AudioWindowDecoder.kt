@@ -36,7 +36,20 @@ class AudioWindowDecoder(
     var rate: Int,
     var channels: Int,
     var encoding: Int,
+    var cacheStartSample: Long = -1L,
+    var cacheEndSample: Long = -1L,
+    var cacheSamples: FloatArray = FloatArray(0),
+    var nextUs: Double = 0.0,
+    var outputEnded: Boolean = false,
   ) {
+    fun resetCursor() {
+      cacheStartSample = -1L
+      cacheEndSample = -1L
+      cacheSamples = FloatArray(0)
+      nextUs = 0.0
+      outputEnded = false
+    }
+
     fun closeQuietly() {
       runCatching { codec.stop() }
       runCatching { codec.release() }
@@ -145,28 +158,60 @@ class AudioWindowDecoder(
     reused: Boolean,
   ): FloatArray {
     val began = android.os.SystemClock.elapsedRealtime()
+    val reqStartSample = startMs * 16L
+    val targetSamples = (durationMs * 16L).toInt()
+    val slice = if (reused) sliceCachedPrefix(active, reqStartSample) else null
+
+    if (slice != null && (slice.size >= targetSamples || active.outputEnded)) {
+      val result = if (slice.size > targetSamples) slice.copyOf(targetSamples) else slice
+      check(result.size >= 1600) { "Not enough audio is available for speech matching yet." }
+      android.util.Log.d(
+        "ReadAlongPerf",
+        "decodeSetupMs=${android.os.SystemClock.elapsedRealtime()-began} decodeReused=true decodeSequential=true cacheHit=true codecLoopMs=0 samples=${result.size}",
+      )
+      return result
+    }
+
+    val sequentialContinue = slice != null && !active.outputEnded
     val extractor = active.extractor
     val decoder = active.codec
-    if (reused) decoder.flush()
-    extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+    val prefixCount = slice?.size ?: 0
+    val neededFromCodec = (targetSamples - prefixCount).coerceAtLeast(0)
+    val startNextUs: Double
+
+    if (sequentialContinue) {
+      startNextUs = active.nextUs
+    } else {
+      active.resetCursor()
+      if (reused) decoder.flush()
+      extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+      startNextUs = startMs * 1000.0
+    }
+
     val seekReady = android.os.SystemClock.elapsedRealtime()
-    val resampler = Pcm16kResampler(startMs, durationMs)
-    val endUs = (startMs + durationMs) * 1000
+    // Allow 500 ms headroom so the final codec packet completes cleanly and feeds the trailing overlap cache.
+    val resampler = Pcm16kResampler(maxSamples = neededFromCodec + TAIL_HEADROOM_SAMPLES, initialNextUs = startNextUs)
+    var feedStopUs = (startMs + durationMs) * 1000L + 60_000L
     var inputEnded = false
-    var outputEnded = false
+    var inputPaused = false
+    var stallTicks = 0
     val info = MediaCodec.BufferInfo()
     var readNs = 0L
     var resampleNs = 0L
     var outputBuffers = 0
     val deadline = android.os.SystemClock.elapsedRealtime() + 45_000
-    while (!outputEnded && resampler.size < resampler.samples.size) {
+    while (!active.outputEnded && resampler.size < neededFromCodec) {
       currentCoroutineContext().ensureActive()
       check(android.os.SystemClock.elapsedRealtime() < deadline) { "Audio decoding timed out. Try again after more audio has downloaded." }
       var queued = false
-      if (!inputEnded) {
-        // Fill all available input slots before draining output. Waiting 10ms after each AAC
-        // packet serializes an otherwise asynchronous codec and costs seconds per passage.
+      if (!inputEnded && !inputPaused) {
+        // Check extractor.sampleTime before dequeueInputBuffer so we never hold an unqueued buffer across sequential windows.
         for (slot in 0 until 8) {
+          val peekUs = extractor.sampleTime
+          if (peekUs >= feedStopUs) {
+            inputPaused = true
+            break
+          }
           val index = decoder.dequeueInputBuffer(0)
           if (index < 0) break
           val input = decoder.getInputBuffer(index)!!
@@ -174,19 +219,20 @@ class AudioWindowDecoder(
           val size = extractor.readSampleData(input, 0)
           readNs += System.nanoTime() - reading
           val timeUs = extractor.sampleTime
-          if (size < 0 || timeUs >= endUs + 200_000) {
+          if (size < 0) {
             decoder.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             inputEnded = true
+            break
           } else {
             decoder.queueInputBuffer(index, 0, size, timeUs, 0)
             extractor.advance()
           }
           queued = true
-          if (inputEnded) break
         }
       }
       var waitUs = if (queued) 0L else 1000L
-      while (!outputEnded && resampler.size < resampler.samples.size) {
+      var drainedAny = false
+      while (!active.outputEnded && resampler.size < neededFromCodec) {
         when (val index = decoder.dequeueOutputBuffer(info, waitUs)) {
           MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
             val output = decoder.outputFormat
@@ -201,18 +247,117 @@ class AudioWindowDecoder(
             resampler.append(output, info.offset, info.size, info.presentationTimeUs, active.rate, active.channels, active.encoding == AudioFormat.ENCODING_PCM_FLOAT)
             resampleNs += System.nanoTime() - sampling
             outputBuffers++
-            outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+            drainedAny = true
+            active.outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
             decoder.releaseOutputBuffer(index, false)
           } else break
         }
         waitUs = 0
       }
+      if (!drainedAny && inputPaused && !inputEnded) {
+        stallTicks++
+        if (stallTicks >= 5) {
+          feedStopUs += 100_000L
+          inputPaused = false
+          stallTicks = 0
+        }
+      } else if (drainedAny) {
+        stallTicks = 0
+      }
     }
-    check(resampler.size >= 1600) { "Not enough audio is available for speech matching yet." }
+
+    val decodedCount = resampler.size
+    val returnedFromCodec = minOf(decodedCount, neededFromCodec)
+    val totalReturned = prefixCount + returnedFromCodec
+    check(totalReturned >= 1600) { "Not enough audio is available for speech matching yet." }
+
+    val result = if (prefixCount == 0 && returnedFromCodec == decodedCount) {
+      resampler.samples.copyOf(returnedFromCodec)
+    } else if (prefixCount == 0) {
+      resampler.samples.copyOf(returnedFromCodec)
+    } else {
+      FloatArray(totalReturned).also { combined ->
+        slice!!.copyInto(combined, destinationOffset = 0)
+        if (returnedFromCodec > 0) {
+          resampler.samples.copyInto(combined, destinationOffset = prefixCount, startIndex = 0, endIndex = returnedFromCodec)
+        }
+      }
+    }
+
+    updateTrailingCache(
+      active = active,
+      reqStartSample = reqStartSample,
+      prefix = slice,
+      decoded = resampler.samples,
+      decodedSize = decodedCount,
+      nextUs = resampler.nextUs,
+    )
+
     android.util.Log.d(
       "ReadAlongPerf",
-      "decodeSetupMs=${seekReady-began} decodeReused=$reused codecLoopMs=${android.os.SystemClock.elapsedRealtime()-seekReady} readMs=${readNs/1_000_000} resampleMs=${resampleNs/1_000_000} buffers=$outputBuffers rate=${active.rate} channels=${active.channels} samples=${resampler.size}",
+      "decodeSetupMs=${seekReady-began} decodeReused=$reused decodeSequential=$sequentialContinue prefixSamples=$prefixCount codecLoopMs=${android.os.SystemClock.elapsedRealtime()-seekReady} readMs=${readNs/1_000_000} resampleMs=${resampleNs/1_000_000} buffers=$outputBuffers rate=${active.rate} channels=${active.channels} samples=${result.size}",
     )
-    return if (resampler.size == resampler.samples.size) resampler.samples else resampler.samples.copyOf(resampler.size)
+    return result
+  }
+
+  private fun sliceCachedPrefix(active: DecoderSession, reqStartSample: Long): FloatArray? {
+    if (active.cacheStartSample < 0L || reqStartSample < active.cacheStartSample || reqStartSample > active.cacheEndSample) {
+      return null
+    }
+    val offset = (reqStartSample - active.cacheStartSample).toInt()
+    if (offset >= active.cacheSamples.size) return FloatArray(0)
+    return active.cacheSamples.copyOfRange(offset, active.cacheSamples.size)
+  }
+
+  private fun updateTrailingCache(
+    active: DecoderSession,
+    reqStartSample: Long,
+    prefix: FloatArray?,
+    decoded: FloatArray,
+    decodedSize: Int,
+    nextUs: Double,
+  ) {
+    val combinedSize = (prefix?.size ?: 0) + decodedSize
+    val tailKeep = minOf(combinedSize, MAX_TAIL_CACHE_SAMPLES)
+    if (tailKeep <= 0) {
+      active.resetCursor()
+      return
+    }
+    val tail = stitchTrailingSamples(prefix, decoded, decodedSize, MAX_TAIL_CACHE_SAMPLES)
+    val endSample = reqStartSample + combinedSize
+    active.cacheStartSample = endSample - tail.size
+    active.cacheEndSample = endSample
+    active.cacheSamples = tail
+    active.nextUs = nextUs
+  }
+
+  companion object {
+    private const val MAX_TAIL_CACHE_SAMPLES = 8 * 16_000
+    private const val TAIL_HEADROOM_SAMPLES = 8_000
+
+    internal fun stitchTrailingSamples(
+      prefix: FloatArray?,
+      decoded: FloatArray,
+      decodedSize: Int,
+      maxTailSamples: Int = MAX_TAIL_CACHE_SAMPLES,
+    ): FloatArray {
+      val prefixLen = prefix?.size ?: 0
+      val total = prefixLen + decodedSize
+      val keep = minOf(total, maxTailSamples)
+      if (keep <= 0) return FloatArray(0)
+      val out = FloatArray(keep)
+      val drop = total - keep
+      var dest = 0
+      if (prefix != null && drop < prefixLen) {
+        val fromPrefix = prefixLen - drop
+        prefix.copyInto(out, destinationOffset = 0, startIndex = drop, endIndex = prefixLen)
+        dest = fromPrefix
+      }
+      val decodedStart = (drop - prefixLen).coerceAtLeast(0)
+      if (decodedStart < decodedSize) {
+        decoded.copyInto(out, destinationOffset = dest, startIndex = decodedStart, endIndex = decodedSize)
+      }
+      return out
+    }
   }
 }

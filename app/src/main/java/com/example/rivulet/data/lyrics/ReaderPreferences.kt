@@ -53,6 +53,42 @@ enum class SyncMode(
   }
 }
 
+enum class SpeechModelTier(
+  val label: String,
+  val modelTag: String,
+  val fileName: String,
+  val approximateMb: Int,
+  val exactBytes: Long,
+  val sha256: String,
+  val url: String,
+  val summary: String,
+) {
+  FAST(
+    label = "Fast (Real-Time)",
+    modelTag = "tiny.en-q8_0",
+    fileName = "ggml-tiny.en-q8_0.bin",
+    approximateMb = 44,
+    exactBytes = 43_550_795L,
+    sha256 = "5bc2b3860aa151a4c6e7bb095e1fcce7cf12c7b020ca08dcec0c6d018bb7dd94",
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin",
+    summary = "Recommended for mobile (~2.5x faster than base.en; stays ahead of 1.5x–2.0x playback).",
+  ),
+  ACCURATE(
+    label = "Accurate (Higher Accuracy)",
+    modelTag = "base.en-q8_0",
+    fileName = "ggml-base.en-q8_0.bin",
+    approximateMb = 82,
+    exactBytes = 81_781_811L,
+    sha256 = "a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e",
+    url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q8_0.bin",
+    summary = "Higher punctuation and rare-word accuracy on faster phones (~82 MB).",
+  );
+
+  companion object {
+    fun fromPersisted(raw: String?): SpeechModelTier = entries.firstOrNull { it.name == raw } ?: FAST
+  }
+}
+
 /** App-wide reading & sync preferences; Compose still applies the system's font scale. */
 class ReaderPreferences(context: Context) {
   private val preferences = context.applicationContext.getSharedPreferences("readalong_reader", Context.MODE_PRIVATE)
@@ -76,6 +112,9 @@ class ReaderPreferences(context: Context) {
 
   private val autoGenerateScriptState = MutableStateFlow(preferences.getBoolean("auto_generate_script", false))
   val autoGenerateScript = autoGenerateScriptState.asStateFlow()
+
+  private val speechModelTierState = MutableStateFlow(SpeechModelTier.fromPersisted(preferences.getString("speech_model_tier", null)))
+  val speechModelTier = speechModelTierState.asStateFlow()
 
   fun setTextSize(value: Int) {
     val next = normalize(value)
@@ -111,6 +150,11 @@ class ReaderPreferences(context: Context) {
   fun setAutoGenerateScript(enabled: Boolean) {
     autoGenerateScriptState.value = enabled
     preferences.edit { putBoolean("auto_generate_script", enabled) }
+  }
+
+  fun setSpeechModelTier(tier: SpeechModelTier) {
+    speechModelTierState.value = tier
+    preferences.edit { putString("speech_model_tier", tier.name) }
   }
 
   private inline fun <reified T : Enum<T>> enumOrDefault(raw: String?, default: T): T =

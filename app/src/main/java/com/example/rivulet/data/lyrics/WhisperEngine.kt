@@ -13,14 +13,28 @@ import kotlin.coroutines.resumeWithException
 fun interface SpeechRecognizer {
   suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord>
 
+  suspend fun transcribe(model: File, pcm: FloatArray, nThreads: Int): List<SpeechWord> =
+    transcribe(model, pcm)
+
   suspend fun transcribeWithPrompt(model: File, pcm: FloatArray, initialPrompt: String?): List<SpeechWord> =
     transcribe(model, pcm)
+
+  suspend fun transcribeWithPrompt(model: File, pcm: FloatArray, initialPrompt: String?, nThreads: Int): List<SpeechWord> =
+    transcribeWithPrompt(model, pcm, initialPrompt)
 
   suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> {
     val words = transcribe(model, pcm)
     onPartial(words)
     return words
   }
+
+  suspend fun transcribeProgressive(
+    model: File,
+    pcm: FloatArray,
+    focusMs: Long,
+    nThreads: Int,
+    onPartial: suspend (List<SpeechWord>) -> Unit,
+  ): List<SpeechWord> = transcribeProgressive(model, pcm, focusMs, onPartial)
 
   suspend fun transcribeProgressiveWithPrompt(
     model: File,
@@ -30,11 +44,27 @@ fun interface SpeechRecognizer {
     onPartial: suspend (List<SpeechWord>) -> Unit,
   ): List<SpeechWord> = transcribeProgressive(model, pcm, focusMs, onPartial)
 
+  suspend fun transcribeProgressiveWithPrompt(
+    model: File,
+    pcm: FloatArray,
+    focusMs: Long,
+    initialPrompt: String?,
+    nThreads: Int,
+    onPartial: suspend (List<SpeechWord>) -> Unit,
+  ): List<SpeechWord> = transcribeProgressiveWithPrompt(model, pcm, focusMs, initialPrompt, onPartial)
+
   suspend fun transcribeScriptWindow(
     model: File,
     pcm: FloatArray,
     initialPrompt: String? = null,
   ): List<SpeechWord> = transcribeWithPrompt(model, pcm, initialPrompt)
+
+  suspend fun transcribeScriptWindow(
+    model: File,
+    pcm: FloatArray,
+    initialPrompt: String?,
+    nThreads: Int,
+  ): List<SpeechWord> = transcribeScriptWindow(model, pcm, initialPrompt)
 
   fun release() {}
   fun close() {}
@@ -59,14 +89,21 @@ class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveC
   private external fun nativeCreate(path: String): Long
   private external fun nativeTranscribe(handle: Long, pcm: FloatArray, adaptiveContext: Boolean): Array<SpeechWord>
   private external fun nativeTranscribeWithPrompt(handle: Long, pcm: FloatArray, adaptiveContext: Boolean, initialPrompt: String?): Array<SpeechWord>
+  private external fun nativeTranscribeConfigured(handle: Long, pcm: FloatArray, adaptiveContext: Boolean, initialPrompt: String?, nThreads: Int): Array<SpeechWord>
   private external fun nativeResetCancel(handle: Long)
   private external fun nativeCancel(handle: Long)
   private external fun nativeDestroy(handle: Long)
 
   override suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord> =
-    transcribeWithPrompt(model, pcm, null)
+    transcribeWithPrompt(model, pcm, null, 0)
+
+  override suspend fun transcribe(model: File, pcm: FloatArray, nThreads: Int): List<SpeechWord> =
+    transcribeWithPrompt(model, pcm, null, nThreads)
 
   override suspend fun transcribeWithPrompt(model: File, pcm: FloatArray, initialPrompt: String?): List<SpeechWord> =
+    transcribeWithPrompt(model, pcm, initialPrompt, 0)
+
+  override suspend fun transcribeWithPrompt(model: File, pcm: FloatArray, initialPrompt: String?, nThreads: Int): List<SpeechWord> =
     suspendCancellableCoroutine { continuation ->
       continuation.invokeOnCancellation {
         synchronized(lock) { if (active === continuation && handle != 0L) nativeCancel(handle) }
@@ -105,10 +142,10 @@ class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveC
             }
             val promptArg = initialPrompt?.trim()?.takeIf { it.isNotEmpty() }
             val began = android.os.SystemClock.elapsedRealtime()
-            val words = nativeTranscribeWithPrompt(handle, pcm, adaptiveContext, promptArg).toList()
+            val words = nativeTranscribeConfigured(handle, pcm, adaptiveContext, promptArg, nThreads).toList()
             Log.d(
               "ReadAlongPerf",
-              "nativeRecognitionMs=${android.os.SystemClock.elapsedRealtime()-began} samples=${pcm.size} prompt=${promptArg != null}",
+              "nativeRecognitionMs=${android.os.SystemClock.elapsedRealtime()-began} samples=${pcm.size} threads=$nThreads prompt=${promptArg != null}",
             )
             if (continuation.isActive) continuation.resume(words)
           } catch (error: Throwable) {
@@ -127,7 +164,15 @@ class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveC
     }
 
   override suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> =
-    transcribeProgressiveWithPrompt(model, pcm, focusMs, null, onPartial)
+    transcribeProgressiveWithPrompt(model, pcm, focusMs, null, 0, onPartial)
+
+  override suspend fun transcribeProgressive(
+    model: File,
+    pcm: FloatArray,
+    focusMs: Long,
+    nThreads: Int,
+    onPartial: suspend (List<SpeechWord>) -> Unit,
+  ): List<SpeechWord> = transcribeProgressiveWithPrompt(model, pcm, focusMs, null, nThreads, onPartial)
 
   override suspend fun transcribeProgressiveWithPrompt(
     model: File,
@@ -135,15 +180,30 @@ class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveC
     focusMs: Long,
     initialPrompt: String?,
     onPartial: suspend (List<SpeechWord>) -> Unit,
+  ): List<SpeechWord> = transcribeProgressiveWithPrompt(model, pcm, focusMs, initialPrompt, 0, onPartial)
+
+  override suspend fun transcribeProgressiveWithPrompt(
+    model: File,
+    pcm: FloatArray,
+    focusMs: Long,
+    initialPrompt: String?,
+    nThreads: Int,
+    onPartial: suspend (List<SpeechWord>) -> Unit,
   ): List<SpeechWord> {
     val completed = LinkedHashMap<SpeechBatch, List<SpeechWord>>()
     val basePrompt = initialPrompt?.trim()?.takeIf { it.isNotEmpty() }
-    for (batch in SpeechBatches.plan(pcm.size, focusMs)) {
-      val chunkPrompt = chainChunkPrompt(basePrompt, completed)
+    val batches = if (pcm.size <= 25 * 16_000) {
+      SpeechBatches.planFocusBalanced(pcm.size, focusMs)
+    } else {
+      SpeechBatches.plan(pcm.size, focusMs)
+    }
+    for (batch in batches) {
+      val chunkPrompt = chainChunkPrompt(basePrompt, batch, completed)
       val words = transcribeWithPrompt(
         model,
         if (batch.startSample == 0 && batch.endSample == pcm.size) pcm else pcm.copyOfRange(batch.startSample, batch.endSample),
         chunkPrompt,
+        nThreads,
       )
       completed[batch] = words.map { it.copy(startMs = it.startMs + batch.startMs, endMs = it.endMs + batch.startMs) }
       onPartial(SpeechBatches.merge(completed))
@@ -155,23 +215,35 @@ class WhisperEngine(private val idleMillis: Long = 60_000, private val adaptiveC
     model: File,
     pcm: FloatArray,
     initialPrompt: String?,
+  ): List<SpeechWord> = transcribeScriptWindow(model, pcm, initialPrompt, 0)
+
+  override suspend fun transcribeScriptWindow(
+    model: File,
+    pcm: FloatArray,
+    initialPrompt: String?,
+    nThreads: Int,
   ): List<SpeechWord> {
     val batches = SpeechBatches.planBalanced(pcm.size)
-    if (batches.size <= 1) return transcribeWithPrompt(model, pcm, initialPrompt)
+    if (batches.size <= 1) return transcribeWithPrompt(model, pcm, initialPrompt, nThreads)
     val basePrompt = initialPrompt?.trim()?.takeIf { it.isNotEmpty() }
     val completed = LinkedHashMap<SpeechBatch, List<SpeechWord>>(batches.size)
     for (batch in batches) {
-      val chunkPrompt = chainChunkPrompt(basePrompt, completed)
+      val chunkPrompt = chainChunkPrompt(basePrompt, batch, completed)
       val slice = if (batch.startSample == 0 && batch.endSample == pcm.size) pcm else pcm.copyOfRange(batch.startSample, batch.endSample)
-      val words = transcribeWithPrompt(model, slice, chunkPrompt)
+      val words = transcribeWithPrompt(model, slice, chunkPrompt, nThreads)
       completed[batch] = words.map { it.copy(startMs = it.startMs + batch.startMs, endMs = it.endMs + batch.startMs) }
     }
     return SpeechBatches.merge(completed)
   }
 
-  private fun chainChunkPrompt(basePrompt: String?, completed: Map<SpeechBatch, List<SpeechWord>>): String? {
-    if (completed.isEmpty()) return basePrompt
-    val tail = SpeechBatches.merge(completed)
+  private fun chainChunkPrompt(
+    basePrompt: String?,
+    currentBatch: SpeechBatch,
+    completed: Map<SpeechBatch, List<SpeechWord>>,
+  ): String? {
+    val preceding = completed.filterKeys { it.startSample < currentBatch.startSample }
+    if (preceding.isEmpty()) return basePrompt
+    val tail = SpeechBatches.merge(preceding)
       .takeLast(24)
       .joinToString(" ") { it.text.trim() }
       .trim()

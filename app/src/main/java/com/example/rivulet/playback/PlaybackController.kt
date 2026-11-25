@@ -202,6 +202,7 @@ class PlaybackController(
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
           publish()
+          syncReadAlongSnapshot()
         }
 
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -252,12 +253,14 @@ class PlaybackController(
     if (currentFileIndex < 0) return
     val prepared = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
     val snapshot = _state.value
+    val speed = player.playbackParameters.speed.takeIf { it > 0f } ?: 1.0f
     readAlong.playback(
       position = if (prepared) player.currentPosition else snapshot.positionMs,
       duration = if (prepared) player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L else snapshot.durationMs,
       track = com.example.rivulet.data.lyrics.ReadAlongTrack(hash, currentFileIndex),
       prepared = prepared,
       isPlaying = player.isPlaying,
+      speed = speed,
     )
   }
 

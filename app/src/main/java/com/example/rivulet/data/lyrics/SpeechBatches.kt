@@ -50,6 +50,15 @@ internal object SpeechBatches {
     }
   }
 
+  fun planFocusBalanced(
+    samples: Int,
+    focusMs: Long,
+    maxBatchSeconds: Int = 13,
+    overlapSeconds: Int = 2,
+  ): List<SpeechBatch> =
+    planBalanced(samples, maxBatchSeconds, overlapSeconds)
+      .sortedBy { kotlin.math.abs((it.startMs + it.endMs) / 2 - focusMs) }
+
   fun merge(completed: Map<SpeechBatch, List<SpeechWord>>): List<SpeechWord> {
     val ordered = completed.keys.sortedBy { it.startSample }
     val merged = ArrayList<SpeechWord>()

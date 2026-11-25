@@ -4,13 +4,21 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Inference must remain optimized in debug APKs used on the phone.
 add_compile_options(-O3)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Ensure every shared library (whisper, ggml, and dynamic CPU backend variants) uses 16 KB ELF alignment.
+add_link_options(-Wl,-z,max-page-size=16384)
+set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
+set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
+if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+  set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
+else()
+  set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+endif()
 include(FetchContent)
 FetchContent_Declare(whisper
   URL https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.4.tar.gz

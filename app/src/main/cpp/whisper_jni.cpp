@@ -1,8 +1,12 @@
 #include <jni.h>
+#include <android/log.h>
+#include <dlfcn.h>
+#include <ggml-backend.h>
 #include <whisper.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,6 +17,46 @@ struct Engine {
 };
 
 namespace {
+
+void ensureBackendsLoaded() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        Dl_info dlInfo{};
+        std::string libDir;
+        if (dladdr(reinterpret_cast<const void *>(&ensureBackendsLoaded), &dlInfo) != 0 && dlInfo.dli_fname != nullptr) {
+            const std::string path(dlInfo.dli_fname);
+            const size_t slash = path.find_last_of('/');
+            if (slash != std::string::npos) {
+                libDir = path.substr(0, slash);
+            }
+        }
+        if (!libDir.empty()) {
+            ggml_backend_load_all_from_path(libDir.c_str());
+        } else {
+            ggml_backend_load_all();
+        }
+        const size_t devs = ggml_backend_dev_count();
+        for (size_t i = 0; i < devs; ++i) {
+            const auto dev = ggml_backend_dev_get(i);
+            __android_log_print(
+                ANDROID_LOG_INFO,
+                "ReadAlongPerf",
+                "ggml_backend dev=%s desc=%s dir=%s",
+                ggml_backend_dev_name(dev),
+                ggml_backend_dev_description(dev),
+                libDir.c_str()
+            );
+        }
+        if (devs == 0) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                "ReadAlongPerf",
+                "ggml_backend loaded 0 devices from dir=%s",
+                libDir.c_str()
+            );
+        }
+    });
+}
 
 std::vector<jchar> utf8ToUtf16(const std::string &utf8) {
     std::vector<jchar> out;
@@ -76,7 +120,8 @@ jobjectArray runTranscribe(
     jlong handle,
     jfloatArray input,
     jboolean adaptive_context,
-    jstring initial_prompt
+    jstring initial_prompt,
+    jint requested_threads
 ) {
     auto *engine = reinterpret_cast<Engine *>(handle);
     const auto wordClass = env->FindClass("com/example/rivulet/data/lyrics/SpeechWord");
@@ -95,9 +140,12 @@ jobjectArray runTranscribe(
     }
 
     auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    // Bound CPU use to 2 threads on mobile to preserve thermal headroom and avoid UI frame drops.
-    const auto cores = std::thread::hardware_concurrency();
-    params.n_threads = cores ? std::min(2u, cores) : 2;
+    const unsigned int cores = std::thread::hardware_concurrency();
+    const unsigned int maxAllowed = cores ? std::min(4u, cores) : 4u;
+    const unsigned int targetThreads = requested_threads > 0
+        ? std::min(static_cast<unsigned int>(requested_threads), maxAllowed)
+        : maxAllowed;
+    params.n_threads = static_cast<int>(std::max(1u, targetThreads));
     params.language = "en";
     params.translate = false;
     params.no_context = true;
@@ -114,11 +162,10 @@ jobjectArray runTranscribe(
         params.initial_prompt = prompt.c_str();
         params.carry_initial_prompt = false;
     }
-    // Keep two seconds of silence/context padding. Full-size input retains the original context.
-    // Short batches avoid repeatedly running a 30-second encoder for 12-13 seconds of speech.
+    // Keep ~1s of context padding and align to 256-frame flash-attn tiles so unused kv_cross tail slots never leak across calls.
     if (adaptive_context) {
         const int frames = (size + 319) / 320; // encoder frames are 20ms
-        params.audio_ctx = std::min(whisper_n_audio_ctx(engine->context), std::max(512, ((frames + 100 + 127) / 128) * 128));
+        params.audio_ctx = std::min(whisper_n_audio_ctx(engine->context), std::max(512, ((frames + 48 + 255) / 256) * 256));
     }
     params.abort_callback = [](void *data) { return static_cast<Engine *>(data)->cancelled.load(); };
     params.abort_callback_user_data = engine;
@@ -221,6 +268,7 @@ jobjectArray runTranscribe(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCreate(JNIEnv *env, jobject, jstring path) {
+    ensureBackendsLoaded();
     const char *name = env->GetStringUTFChars(path, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
@@ -248,7 +296,7 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(
     jfloatArray input,
     jboolean adaptive_context
 ) {
-    return runTranscribe(env, handle, input, adaptive_context, nullptr);
+    return runTranscribe(env, handle, input, adaptive_context, nullptr, 0);
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
@@ -260,7 +308,20 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeWithPrompt(
     jboolean adaptive_context,
     jstring initial_prompt
 ) {
-    return runTranscribe(env, handle, input, adaptive_context, initial_prompt);
+    return runTranscribe(env, handle, input, adaptive_context, initial_prompt, 0);
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeConfigured(
+    JNIEnv *env,
+    jobject,
+    jlong handle,
+    jfloatArray input,
+    jboolean adaptive_context,
+    jstring initial_prompt,
+    jint n_threads
+) {
+    return runTranscribe(env, handle, input, adaptive_context, initial_prompt, n_threads);
 }
 
 extern "C" JNIEXPORT void JNICALL

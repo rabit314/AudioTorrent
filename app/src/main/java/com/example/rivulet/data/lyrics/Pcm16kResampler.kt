@@ -6,12 +6,23 @@ import kotlin.math.ceil
 import kotlin.math.floor
 
 /** Visits only required 16kHz output samples, not every channel of every source frame. */
-internal class Pcm16kResampler(startMs: Long, durationMs: Long) {
-  val samples = FloatArray((durationMs * 16).toInt())
+internal class Pcm16kResampler(
+  maxSamples: Int,
+  initialNextUs: Double,
+  durationLimitUs: Double = maxSamples * 62.5,
+) {
+  constructor(startMs: Long, durationMs: Long) : this(
+    maxSamples = (durationMs * 16).toInt(),
+    initialNextUs = startMs * 1000.0,
+    durationLimitUs = durationMs * 1000.0,
+  )
+
+  val samples = FloatArray(maxSamples)
   var size = 0
     private set
-  private var nextUs = startMs * 1000.0
-  private val endUs = (startMs + durationMs) * 1000.0
+  var nextUs = initialNextUs
+    private set
+  private val endUs = initialNextUs + durationLimitUs
   private var shorts = ShortArray(0)
   private var floats = FloatArray(0)
 

@@ -88,6 +88,7 @@ fun LyricsView(
   val keepScreenOn by repository.readerPreferences.keepScreenOn.collectAsStateWithLifecycle()
   val syncMode by repository.readerPreferences.syncMode.collectAsStateWithLifecycle()
   val autoGenerateScript by repository.readerPreferences.autoGenerateScript.collectAsStateWithLifecycle()
+  val speechModelTier by repository.readerPreferences.speechModelTier.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
 
@@ -391,6 +392,7 @@ fun LyricsView(
         onDismissLookup = repository::dismissLookupStatus,
         showAhead = false,
         compactLookup = state.bookId == null,
+        modelSizeMb = speechModelTier.approximateMb,
         textColor = palette.mutedText,
       )
     }
@@ -496,7 +498,7 @@ fun LyricsView(
         TextProvider.entries.forEach { provider -> FilterChip(textProvider == provider, { textProvider = provider; search() }, label = { Text(provider.label) }) }
       }
       TextButton(onClick = { search() }) { Text("Search") }
-      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
+      ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, modelSizeMb = speechModelTier.approximateMb)
       if (state.editions.isEmpty() || state.accessUrl != null) {
         TextButton(onClick = startScriptGeneration, modifier = Modifier.testTag("dialog-generate-script")) {
           Text("No ebook found? Generate script from audio")
@@ -581,7 +583,14 @@ fun LyricsView(
       state = state,
       syncMode = syncMode,
       autoGenerateScript = autoGenerateScript,
+      speechModelTier = speechModelTier,
+      activeModelTag = repository.activeSpeechModelTag(),
+      isFastDownloaded = repository.isSpeechModelDownloaded(SpeechModelTier.FAST),
+      isAccurateDownloaded = repository.isSpeechModelDownloaded(SpeechModelTier.ACCURATE),
+      isUsingLegacyModel = repository.isUsingLegacySpeechModel(),
       onSelectMode = repository::setSyncMode,
+      onSelectModelTier = repository::setSpeechModelTier,
+      onDownloadModelTier = repository::downloadModelTier,
       onToggleFullTrack = repository::setTranscribeFullTrack,
       onToggleAutoScript = repository.readerPreferences::setAutoGenerateScript,
       onRetryCurrent = { repository.retryCurrentPassage(); showSyncSheet = false },
@@ -806,7 +815,14 @@ private fun SyncCoverageDialog(
   state: ReadAlongState,
   syncMode: SyncMode,
   autoGenerateScript: Boolean,
+  speechModelTier: SpeechModelTier,
+  activeModelTag: String,
+  isFastDownloaded: Boolean,
+  isAccurateDownloaded: Boolean,
+  isUsingLegacyModel: Boolean,
   onSelectMode: (SyncMode) -> Unit,
+  onSelectModelTier: (SpeechModelTier) -> Unit,
+  onDownloadModelTier: (SpeechModelTier) -> Unit,
   onToggleFullTrack: (Boolean) -> Unit,
   onToggleAutoScript: (Boolean) -> Unit,
   onRetryCurrent: () -> Unit,
@@ -826,7 +842,7 @@ private fun SyncCoverageDialog(
       ) {
         if (state.isScriptSource) {
           Text(
-            "Generated automatically from English speech (base.en). Proper nouns and rare terms may vary.",
+            "Generated automatically from English speech (on-device Whisper). Proper nouns and rare terms may vary.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -838,6 +854,20 @@ private fun SyncCoverageDialog(
             else -> if (state.isScriptSource) "Waiting to transcribe around playhead" else "Waiting to sync around playhead"
           }
           Text(aheadText, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+          cov.syncSpeedRatio?.let { ratio ->
+            val syncLabel = String.format(java.util.Locale.US, "%.1f×", ratio)
+            val playLabel = String.format(java.util.Locale.US, "%.1f×", cov.playbackSpeed)
+            val speedSummary = if (cov.playbackSpeed > 1.05f || cov.playbackSpeed < 0.95f) {
+              "Sync speed: $syncLabel real-time (playback $playLabel)"
+            } else {
+              "Sync speed: $syncLabel real-time"
+            }
+            Text(
+              speedSummary,
+              style = MaterialTheme.typography.bodySmall,
+              color = if (ratio >= cov.playbackSpeed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            )
+          }
           Text(
             if (state.isScriptSource) "Track transcribed: ${(cov.trackTimedRatio * 100).toInt()}% (${cov.syncedWindowsMs.size} cached span${if (cov.syncedWindowsMs.size == 1) "" else "s"})"
             else "Current track synced: ${(cov.trackTimedRatio * 100).toInt()}% (${cov.syncedWindowsMs.size} cached span${if (cov.syncedWindowsMs.size == 1) "" else "s"})",
@@ -901,6 +931,43 @@ private fun SyncCoverageDialog(
         }
 
         if (state.source == TextSyncSource.NARRATION || state.isScriptSource) {
+          HorizontalDivider()
+          Text("Speech model", style = MaterialTheme.typography.labelLarge)
+          Text(
+            if (isUsingLegacyModel) "Active engine: $activeModelTag (legacy model installed)"
+            else "Active engine: $activeModelTag",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          state.modelProgress?.let { progress ->
+            LinearProgressIndicator(progress = { (progress / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+          }
+          SpeechModelTier.entries.forEach { tier ->
+            val downloaded = if (tier == SpeechModelTier.FAST) isFastDownloaded else isAccurateDownloaded
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { onSelectModelTier(tier) }
+                .padding(vertical = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              RadioButton(selected = speechModelTier == tier, onClick = { onSelectModelTier(tier) })
+              Spacer(Modifier.width(6.dp))
+              Column(Modifier.weight(1f)) {
+                Text(tier.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                Text(
+                  if (downloaded) "${tier.modelTag} · Installed · ${tier.summary}"
+                  else "${tier.modelTag} · ${tier.approximateMb} MB download · ${tier.summary}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+              if (!downloaded && state.modelProgress == null) {
+                TextButton(onClick = { onDownloadModelTier(tier) }) { Text("Get") }
+              }
+            }
+          }
           HorizontalDivider()
           Text("Background sync mode", style = MaterialTheme.typography.labelLarge)
           SyncMode.entries.forEach { mode ->
@@ -1055,6 +1122,7 @@ fun ReadAlongStatus(
   onDismissLookup: (() -> Unit)? = null,
   showAhead: Boolean = true,
   compactLookup: Boolean = false,
+  modelSizeMb: Int = SpeechModelTier.FAST.approximateMb,
   textColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
   val hasLookupNotice = state.lookupMessage != null || state.accessUrl != null ||
@@ -1111,7 +1179,7 @@ fun ReadAlongStatus(
       if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
     }
     if (state.preparingAhead && showAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall, color = textColor)
-    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
+    if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · $modelSizeMb MB") }
   }
 }
 

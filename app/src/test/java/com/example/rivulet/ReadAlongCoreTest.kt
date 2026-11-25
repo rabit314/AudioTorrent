@@ -208,6 +208,39 @@ class ReadAlongCoreTest {
     assertEquals(30, stats.matchedSentences)
     assertEquals(1000, stats.totalBookSentences)
     assertEquals("Balanced (+3m limit)", stats.syncPausedReason)
+    assertNull(stats.syncSpeedRatio)
+    assertEquals(1.0f, stats.playbackSpeed, 0.001f)
+
+    val withSpeed = ReadAlongTimeline.computeSyncCoverage(
+      windows = windows,
+      positionMs = 15_000L,
+      durationMs = 200_000L,
+      matchedSentences = 30,
+      totalBookSentences = 1000,
+      isSyncingNow = true,
+      syncPausedReason = null,
+      syncSpeedRatio = 2.4f,
+      playbackSpeed = 1.5f,
+    )
+    assertEquals(2.4f, withSpeed.syncSpeedRatio!!, 0.001f)
+    assertEquals(1.5f, withSpeed.playbackSpeed, 0.001f)
+  }
+
+  @Test fun syncSchedulerSprintsBelowWallRunwayAndAccountsForPlaybackSpeed() {
+    assertEquals(SyncBudget(4, 0L), SyncScheduler.computeBudget(ahead = false, isImmediate = true, effectiveAheadWallMs = 0L, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
+    // 60s ahead audio at 2.0x speed is only 30s wall runway (< 45s) -> still sprints with 4 threads, 0ms cooldown.
+    val runway2x = SyncScheduler.effectiveWallRunwayMs(60_000L, 2.0f)
+    assertEquals(30_000L, runway2x)
+    assertEquals(SyncBudget(4, 0L), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = runway2x, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
+    // 60s ahead audio at 1.0x speed is 60s wall runway (45s..90s) -> tapers to 3 threads, 300ms cooldown.
+    val runway1x = SyncScheduler.effectiveWallRunwayMs(60_000L, 1.0f)
+    assertEquals(60_000L, runway1x)
+    assertEquals(SyncBudget(3, 300L), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = runway1x, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
+    // >= 90s runway drops to 2 threads + SyncMode cooldown.
+    assertEquals(SyncBudget(2, SyncMode.BALANCED.lookaheadCooldownMs), SyncScheduler.computeBudget(ahead = true, isImmediate = false, effectiveAheadWallMs = 95_000L, transcribeFullTrack = false, isPlaying = true, syncMode = SyncMode.BALANCED))
+    // Decode bounds: 23s narration vs 24s script.
+    assertEquals(18_500L to 23_000L, SyncScheduler.windowDecodeBounds(20_000L, 40_000L, 100_000L, isScript = false))
+    assertEquals(18_000L to 24_000L, SyncScheduler.windowDecodeBounds(20_000L, 40_000L, 100_000L, isScript = true))
   }
 
   @Test fun hintScopedMatcherFastPathMatchesSequentialPassages() {

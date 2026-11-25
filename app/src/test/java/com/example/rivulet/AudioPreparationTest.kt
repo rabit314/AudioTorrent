@@ -76,4 +76,34 @@ class AudioPreparationTest {
     assertEquals(16_000, pcm.size)
     assertTrue(pcm.samples.all { it == 0.25f })
   }
+
+  @Test fun focusBalancedOrdersClosestHalfFirstAndSequentialResamplerStitchesCleanly() {
+    val samples = 23 * 16_000
+    val tailFirst = SpeechBatches.planFocusBalanced(samples, focusMs = 19_000L)
+    assertEquals(2, tailFirst.size)
+    assertEquals(10_500L, tailFirst[0].startMs)
+    assertEquals(23_000L, tailFirst[0].endMs)
+    assertEquals(0L, tailFirst[1].startMs)
+    assertEquals(12_500L, tailFirst[1].endMs)
+
+    val headFirst = SpeechBatches.planFocusBalanced(samples, focusMs = 2_000L)
+    assertEquals(0L, headFirst[0].startMs)
+    assertEquals(10_500L, headFirst[1].startMs)
+
+    // Verify Pcm16kResampler + trailing cache stitching maintains seamless 16kHz continuity.
+    val first = Pcm16kResampler(maxSamples = 200, initialNextUs = 0.0)
+    val pcmA = ByteBuffer.allocate(400 * 2).order(ByteOrder.LITTLE_ENDIAN)
+    repeat(400) { idx -> pcmA.putShort((idx * 10).toShort()) }
+    first.append(pcmA, 0, pcmA.capacity(), 0L, 16_000, 1, false)
+    assertEquals(200, first.size)
+
+    val tail = AudioWindowDecoder.stitchTrailingSamples(null, first.samples, first.size, maxTailSamples = 80)
+    assertEquals(80, tail.size)
+    assertEquals(first.samples[120], tail[0], 0f)
+
+    val next = Pcm16kResampler(maxSamples = 120, initialNextUs = first.nextUs)
+    next.append(pcmA, 0, pcmA.capacity(), 0L, 16_000, 1, false)
+    assertEquals(120, next.size)
+    assertEquals(first.samples[199] + 10f / 32768f, next.samples[0], 1e-6f)
+  }
 }

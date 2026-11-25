@@ -171,6 +171,8 @@ class AutomaticTextAndCacheTest {
     val files = File(context.cacheDir, "scheduler-${UUID.randomUUID()}")
     val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
     models.file.parentFile!!.mkdirs(); models.file.writeBytes(byteArrayOf(1))
+    val prefs = ReaderPreferences(context); val previousMode = prefs.syncMode.value
+    prefs.setSyncMode(SyncMode.PLAYHEAD_ONLY)
     val starts = CopyOnWriteArrayList<Long>(); val entered = CompletableDeferred<Unit>(); val finish = CompletableDeferred<Unit>()
     val r = ReadAlongRepository(context, store, ReadAlongAudioDecoder { _, start, _ -> starts.add(start); FloatArray(16_000) },
       speech = SpeechRecognizer { _, _ -> if (!entered.isCompleted) { entered.complete(Unit); finish.await() }; emptyList() }, models = models)
@@ -181,21 +183,76 @@ class AutomaticTextAndCacheTest {
       main { r.playback(1_000_000, 2_000_000, track) }; withTimeout(10_000) { entered.await() }
       main { r.setVisible(false) }; finish.complete(Unit)
       eventually { store.windowReady(track, "public-book", 1_000_000) }
-      delay(150); assertEquals(listOf(995_000L), starts.toList())
+      delay(150); assertEquals(listOf(998_500L), starts.toList())
       main { r.setVisible(true) }; eventually { store.windowReady(track, "public-book", 1_020_000) }
       delay(150); assertEquals(2, starts.size)
       main { r.playbackDiscontinuity(); r.playback(1_600_000, 2_000_000, track) }
       eventually { store.windowReady(track, "public-book", 1_620_000) }
-      assertEquals(listOf(995_000L, 1_015_000L, 1_595_000L, 1_615_000L), starts.toList())
+      assertEquals(listOf(998_500L, 1_018_500L, 1_598_500L, 1_618_500L), starts.toList())
       val sentence = ReadAlongText.sentences(book().book, "public-book").single()
       store.saveWindow(track, "public-book", 1_600_000, 1_620_000, listOf(TimedLine(sentence.id, 1_601_000, 1_605_000, text)))
       store.setOffset(track, 1500)
       main { r.retryCurrentPassage() }
       eventually { starts.size == 5 && store.windowReady(track, "public-book", 1_600_000) }
-      assertEquals(1_595_000L, starts.last())
+      assertEquals(1_598_500L, starts.last())
       assertEquals(1_601_000L, store.timings(track, "public-book").single().startTimeMs)
       assertEquals(1500L, store.offset(track))
-    } finally { finish.complete(Unit); main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively() }
+    } finally { prefs.setSyncMode(previousMode); finish.complete(Unit); main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively() }
+  }
+
+  @Test fun lookaheadPrefetchesNextWindowConcurrentlyAndHonorsLegacyModels() = runBlocking {
+    val name = "prefetch-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name); val store = ReadAlongStore(db)
+    val files = File(context.cacheDir, "prefetch-${UUID.randomUUID()}")
+    val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
+    // Verify legacy base.en-q5_1 fallback is preserved until Fast is downloaded.
+    models.legacyFile.parentFile!!.mkdirs(); models.legacyFile.writeBytes(byteArrayOf(2))
+    assertTrue(models.isInstalled(SpeechModelTier.FAST))
+    assertEquals(models.legacyFile, models.activeFile(SpeechModelTier.FAST))
+    assertTrue(models.isUsingLegacyFallback(SpeechModelTier.FAST))
+    models.fastFile.writeBytes(byteArrayOf(1))
+    assertEquals(models.fastFile, models.activeFile(SpeechModelTier.FAST))
+    assertFalse(models.isUsingLegacyFallback(SpeechModelTier.FAST))
+
+    val prefs = ReaderPreferences(context); val previousMode = prefs.syncMode.value
+    prefs.setSyncMode(SyncMode.BALANCED)
+    val prefetchedConcurrent = CompletableDeferred<Unit>()
+    val lookaheadEntered = CompletableDeferred<Unit>()
+    val observedThreads = CopyOnWriteArrayList<Int>()
+    val decodedStarts = CopyOnWriteArrayList<Long>()
+    val r = ReadAlongRepository(
+      context,
+      store,
+      ReadAlongAudioDecoder { _, start, _ ->
+        decodedStarts.add(start)
+        if (start == 38_500L && lookaheadEntered.isCompleted) prefetchedConcurrent.complete(Unit)
+        FloatArray(16_000)
+      },
+      speech = object : SpeechRecognizer {
+        override suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord> = emptyList()
+        override suspend fun transcribe(model: File, pcm: FloatArray, nThreads: Int): List<SpeechWord> {
+          observedThreads.add(nThreads)
+          if (observedThreads.size == 2) {
+            lookaheadEntered.complete(Unit)
+            withTimeout(5_000) { prefetchedConcurrent.await() }
+          }
+          return emptyList()
+        }
+        override suspend fun transcribeProgressive(model: File, pcm: FloatArray, focusMs: Long, nThreads: Int, onPartial: suspend (List<SpeechWord>) -> Unit): List<SpeechWord> {
+          observedThreads.add(nThreads)
+          onPartial(emptyList())
+          return emptyList()
+        }
+      },
+      models = models,
+    )
+    try {
+      store.attach(track, book(), setOf(3))
+      main { r.activate(track, 0, 120_000); r.setVisible(true) }; loaded(r)
+      main { r.playback(0, 120_000, track, prepared = true, isPlaying = true, speed = 2.0f) }
+      withTimeout(10_000) { prefetchedConcurrent.await() }
+      assertTrue(observedThreads.isNotEmpty() && observedThreads.all { it == 4 })
+      assertTrue(decodedStarts.contains(38_500L))
+    } finally { prefs.setSyncMode(previousMode); main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively() }
   }
 
   @Test fun rapidSeeksCancelObsoleteWindowsAndOnlySaveTheLatestPassage() = runBlocking {

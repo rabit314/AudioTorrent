@@ -35,7 +35,47 @@ data class SyncCoverageStats(
   val totalBookSentences: Int = 0,
   val isSyncingNow: Boolean = false,
   val syncPausedReason: String? = null,
+  val syncSpeedRatio: Float? = null,
+  val playbackSpeed: Float = 1.0f,
 )
+
+internal data class SyncBudget(val threads: Int, val cooldownMs: Long)
+
+internal object SyncScheduler {
+  fun effectiveWallRunwayMs(aheadSyncedMs: Long, playbackSpeed: Float): Long {
+    val speed = playbackSpeed.coerceIn(0.5f, 4.0f)
+    return (aheadSyncedMs.coerceAtLeast(0L) / speed).toLong()
+  }
+
+  fun computeBudget(
+    ahead: Boolean,
+    isImmediate: Boolean,
+    effectiveAheadWallMs: Long,
+    transcribeFullTrack: Boolean,
+    isPlaying: Boolean,
+    syncMode: SyncMode,
+  ): SyncBudget = when {
+    !ahead -> SyncBudget(threads = 4, cooldownMs = 0L)
+    transcribeFullTrack && !isPlaying -> SyncBudget(threads = 2, cooldownMs = SyncMode.FULL_TRACK.lookaheadCooldownMs)
+    isImmediate || effectiveAheadWallMs < 45_000L -> SyncBudget(threads = 4, cooldownMs = 0L)
+    effectiveAheadWallMs < 90_000L -> SyncBudget(threads = 3, cooldownMs = 300L)
+    transcribeFullTrack -> SyncBudget(threads = 2, cooldownMs = SyncMode.FULL_TRACK.lookaheadCooldownMs)
+    else -> SyncBudget(threads = 2, cooldownMs = syncMode.lookaheadCooldownMs)
+  }
+
+  fun windowDecodeBounds(
+    startMs: Long,
+    windowEndMs: Long,
+    durationMs: Long,
+    isScript: Boolean,
+  ): Pair<Long, Long> {
+    val padMs = if (isScript) 2_000L else 1_500L
+    val decodeStart = (startMs - padMs).coerceAtLeast(0L)
+    val decodeEnd = minOf(windowEndMs + padMs, durationMs)
+    val decodeDur = (decodeEnd - decodeStart).coerceIn(1L, 30_000L)
+    return decodeStart to decodeDur
+  }
+}
 
 data class ReadAlongState(
   val track: ReadAlongTrack? = null,
@@ -163,6 +203,8 @@ object ReadAlongTimeline {
     totalBookSentences: Int,
     isSyncingNow: Boolean,
     syncPausedReason: String?,
+    syncSpeedRatio: Float? = null,
+    playbackSpeed: Float = 1.0f,
   ): SyncCoverageStats {
     val merged = mergeWindows(windows, durationMs)
     val pos = positionMs.coerceAtLeast(0L)
@@ -179,6 +221,8 @@ object ReadAlongTimeline {
       totalBookSentences = totalBookSentences,
       isSyncingNow = isSyncingNow,
       syncPausedReason = syncPausedReason,
+      syncSpeedRatio = syncSpeedRatio,
+      playbackSpeed = playbackSpeed.coerceIn(0.5f, 4.0f),
     )
   }
 
