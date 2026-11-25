@@ -11,9 +11,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
+import com.example.rivulet.BuildConfig
 import com.example.rivulet.data.TorrentDatabase
 import com.example.rivulet.data.lyrics.*
 import com.example.rivulet.theme.*
+import com.example.rivulet.ui.main.AboutDialog
+import com.example.rivulet.ui.main.ChangelogDialog
 import com.example.rivulet.ui.player.LyricsView
 import org.junit.Assert.*
 import org.junit.Rule
@@ -155,5 +158,21 @@ class ReaderPreferencesUiTest {
       db.close()
       activity.deleteDatabase(name)
     }
+  }
+
+  @Test fun aboutAndChangelogShowCurrentVersionAndLinks() {
+    var showAbout by mutableStateOf(true)
+    var showChangelog by mutableStateOf(false)
+    compose.setContent {
+      RivuletTheme(preset = ReaderThemePreset.SOFT_SAGE) {
+        if (showAbout) AboutDialog(onDismiss = { showAbout = false }, onOpenChangelog = { showChangelog = true })
+        if (showChangelog) ChangelogDialog(onOpenReleases = {}, onDismiss = { showChangelog = false })
+      }
+    }
+    compose.onNodeWithText("v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})").assertIsDisplayed()
+    compose.onNodeWithText("GitHub").assertIsDisplayed()
+    compose.onNodeWithText("Changelog").performClick()
+    compose.onNodeWithText("v0.4.0-beta (Build 5)").assertIsDisplayed()
+    compose.onNodeWithText("GitHub Releases").assertIsDisplayed()
   }
 }

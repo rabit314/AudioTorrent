@@ -20,17 +20,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -40,15 +50,22 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -57,6 +74,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -69,6 +87,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.rivulet.AppContainer
+import com.example.rivulet.BuildConfig
 import com.example.rivulet.R
 import com.example.rivulet.data.ListeningHistoryItem
 import com.example.rivulet.data.TorrentUi
@@ -87,6 +108,8 @@ import com.example.rivulet.ui.formatBytes
 import com.example.rivulet.ui.formatDuration
 import com.example.rivulet.ui.formatRate
 import com.example.rivulet.ui.main.AboutDialog
+import com.example.rivulet.ui.main.AppLinks
+import com.example.rivulet.ui.main.ChangelogDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -116,7 +139,10 @@ fun LibraryScreen(
 
   var showAddDialog by remember { mutableStateOf(false) }
   var showAboutDialog by remember { mutableStateOf(false) }
+  var showChangelogDialog by remember { mutableStateOf(false) }
   var showThemeDialog by remember { mutableStateOf(false) }
+  val drawerState = rememberDrawerState(DrawerValue.Closed)
+  val uriHandler = LocalUriHandler.current
   var deleteCandidate by remember { mutableStateOf<TorrentUi?>(null) }
   var deleteDiskFiles by remember { mutableStateOf(false) }
   var magnet by remember { mutableStateOf("") }
@@ -196,19 +222,59 @@ fun LibraryScreen(
       }
     }
 
-  Scaffold(
-    modifier = modifier.safeDrawingPadding(),
-    topBar = {
-      TopAppBar(
-        navigationIcon = {
-          IconButton(onClick = { showAboutDialog = true }) {
-            Icon(
-              Icons.Default.Menu,
-              contentDescription = "About AudioTorrent",
-              tint = MaterialTheme.colorScheme.onSurface,
-            )
-          }
+  ModalNavigationDrawer(
+    drawerState = drawerState,
+    gesturesEnabled = drawerState.isOpen,
+    drawerContent = {
+      AppDrawerSheet(
+        currentTheme = readerTheme,
+        onOpenTheme = {
+          scope.launch { drawerState.close() }
+          showThemeDialog = true
         },
+        onOpenHistory = {
+          scope.launch { drawerState.close() }
+          onOpenHistory()
+        },
+        onOpenSearch = {
+          scope.launch { drawerState.close() }
+          onOpenAudioBookBay()
+        },
+        onAddTorrent = {
+          scope.launch { drawerState.close() }
+          showAddDialog = true
+        },
+        onOpenChangelog = {
+          scope.launch { drawerState.close() }
+          showChangelogDialog = true
+        },
+        onOpenAbout = {
+          scope.launch { drawerState.close() }
+          showAboutDialog = true
+        },
+        onOpenUrl = { url ->
+          scope.launch { drawerState.close() }
+          uriHandler.openUri(url)
+        },
+      )
+    },
+  ) {
+    Scaffold(
+      modifier = modifier.safeDrawingPadding(),
+      topBar = {
+        TopAppBar(
+          navigationIcon = {
+            IconButton(
+              onClick = { scope.launch { drawerState.open() } },
+              modifier = Modifier.testTag("open-app-menu"),
+            ) {
+              Icon(
+                Icons.Default.Menu,
+                contentDescription = "Open menu",
+                tint = MaterialTheme.colorScheme.onSurface,
+              )
+            }
+          },
         title = {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Image(
@@ -525,6 +591,7 @@ fun LibraryScreen(
       }
     }
   }
+  } // end ModalNavigationDrawer
 
   // Delete Confirmation Dialog
   deleteCandidate?.let { torrent ->
@@ -644,6 +711,17 @@ fun LibraryScreen(
   if (showAboutDialog) {
     AboutDialog(
       onDismiss = { showAboutDialog = false },
+      onOpenChangelog = { showChangelogDialog = true },
+    )
+  }
+
+  if (showChangelogDialog) {
+    ChangelogDialog(
+      onOpenReleases = {
+        showChangelogDialog = false
+        uriHandler.openUri(AppLinks.GITHUB_RELEASES)
+      },
+      onDismiss = { showChangelogDialog = false },
     )
   }
 
@@ -653,6 +731,230 @@ fun LibraryScreen(
       onSelect = container.playback.readAlong.readerPreferences::setReaderTheme,
       onDismiss = { showThemeDialog = false },
     )
+  }
+}
+
+@Composable
+private fun AppDrawerSheet(
+  currentTheme: ReaderThemePreset,
+  onOpenTheme: () -> Unit,
+  onOpenHistory: () -> Unit,
+  onOpenSearch: () -> Unit,
+  onAddTorrent: () -> Unit,
+  onOpenChangelog: () -> Unit,
+  onOpenAbout: () -> Unit,
+  onOpenUrl: (String) -> Unit,
+) {
+  ModalDrawerSheet(
+    modifier = Modifier.widthIn(max = 312.dp),
+    windowInsets = DrawerDefaults.windowInsets,
+    drawerContainerColor = MaterialTheme.colorScheme.surface,
+    drawerContentColor = MaterialTheme.colorScheme.onSurface,
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .verticalScroll(rememberScrollState())
+        .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+      // Brand & Version Card
+      Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onOpenChangelog),
+      ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Image(
+              painter = painterResource(R.drawable.app_logo),
+              contentDescription = "AudioTorrent Logo",
+              modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)),
+            )
+            Column(Modifier.weight(1f)) {
+              Text(
+                "AudioTorrent",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+              )
+              Text(
+                "Audiobook Torrent & Read-Along",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(
+              shape = RoundedCornerShape(8.dp),
+              color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+              Text(
+                "v${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+              )
+            }
+            Text(
+              "Build ${BuildConfig.VERSION_CODE}",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+              "Changelog →",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.primary,
+              fontWeight = FontWeight.Medium,
+            )
+          }
+        }
+      }
+
+      Spacer(Modifier.height(14.dp))
+      Text(
+        "Library & Appearance",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+      )
+
+      val itemColors = NavigationDrawerItemDefaults.colors(
+        unselectedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        unselectedTextColor = MaterialTheme.colorScheme.onSurface,
+      )
+
+      NavigationDrawerItem(
+        label = { Text("App Theme") },
+        icon = { Icon(Icons.Default.Palette, contentDescription = null) },
+        badge = {
+          Text(
+            currentTheme.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+          )
+        },
+        selected = false,
+        onClick = onOpenTheme,
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = { Text("Listening History") },
+        icon = { Icon(Icons.Default.History, contentDescription = null) },
+        selected = false,
+        onClick = onOpenHistory,
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = { Text("Search Audiobooks") },
+        icon = { Icon(Icons.Default.Search, contentDescription = null) },
+        selected = false,
+        onClick = onOpenSearch,
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = { Text("Add Magnet / .torrent") },
+        icon = { Icon(Icons.Default.AddCircleOutline, contentDescription = null) },
+        selected = false,
+        onClick = onAddTorrent,
+        colors = itemColors,
+      )
+
+      Spacer(Modifier.height(6.dp))
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Spacer(Modifier.height(10.dp))
+
+      Text(
+        "App Info & Project",
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+      )
+
+      NavigationDrawerItem(
+        label = { Text("What's New & Changelog") },
+        icon = { Icon(Icons.Default.NewReleases, contentDescription = null) },
+        badge = {
+          Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+            Text(
+              "v${BuildConfig.VERSION_NAME}",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+          }
+        },
+        selected = false,
+        onClick = onOpenChangelog,
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = { Text("About AudioTorrent") },
+        icon = { Icon(Icons.Default.Info, contentDescription = null) },
+        selected = false,
+        onClick = onOpenAbout,
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = {
+          Column {
+            Text("GitHub Repository")
+            Text(
+              "github.com/rabit314/AudioTorrent",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        },
+        icon = { Icon(Icons.Default.Code, contentDescription = null) },
+        badge = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp)) },
+        selected = false,
+        onClick = { onOpenUrl(AppLinks.GITHUB_REPO) },
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = {
+          Column {
+            Text("Latest Releases & APK")
+            Text(
+              "Download or verify builds",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        },
+        icon = { Icon(Icons.Default.Download, contentDescription = null) },
+        badge = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp)) },
+        selected = false,
+        onClick = { onOpenUrl(AppLinks.GITHUB_RELEASES) },
+        colors = itemColors,
+      )
+      NavigationDrawerItem(
+        label = { Text("Report Issue / Feedback") },
+        icon = { Icon(Icons.Default.BugReport, contentDescription = null) },
+        badge = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp)) },
+        selected = false,
+        onClick = { onOpenUrl(AppLinks.GITHUB_ISSUES) },
+        colors = itemColors,
+      )
+
+      Spacer(Modifier.weight(1f))
+      Spacer(Modifier.height(12.dp))
+      Text(
+        "AudioTorrent v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+      )
+    }
   }
 }
 
