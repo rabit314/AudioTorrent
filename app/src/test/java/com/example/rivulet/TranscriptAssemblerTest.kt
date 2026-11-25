@@ -101,4 +101,30 @@ class TranscriptAssemblerTest {
     assertTrue(TranscriptAssembler.isSilent(FloatArray(1600)))
     assertFalse(TranscriptAssembler.isSilent(FloatArray(1600) { if (it % 2 == 0) 0.05f else -0.05f }))
   }
+
+  @Test fun deduplicatesMultiWordBoundaryPhrasesAdjacentGlitchesAndKeepsLowercaseContinuation() {
+    val words = listOf(
+      SpeechWord("any", 20_050, 20_250),
+      SpeechWord("job", 20_280, 20_480),
+      SpeechWord("in", 20_500, 20_650),
+      SpeechWord("the", 20_670, 20_850),
+      SpeechWord("into", 20_900, 21_150),
+      SpeechWord("Commisioner", 21_200, 21_500),
+      SpeechWord("\"Commisioner", 21_550, 21_800),
+      SpeechWord("had", 21_900, 22_050),
+      SpeechWord("had", 22_100, 22_250),
+      SpeechWord("room.", 22_300, 22_650),
+    )
+    val lines = TranscriptAssembler.assembleWindow(
+      words = words,
+      bookId = "script:test:0",
+      windowStartMs = 20_000L,
+      windowEndMs = 40_000L,
+      previousTailEndMs = 19_980L,
+      previousTailTokens = listOf("back", "or", "any", "job", "in", "the"),
+      previousEndedSentence = false,
+    )
+    assertEquals(1, lines.size)
+    assertEquals("into Commisioner had had room.", lines.single().text)
+  }
 }

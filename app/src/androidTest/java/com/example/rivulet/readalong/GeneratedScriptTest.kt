@@ -165,6 +165,7 @@ class GeneratedScriptTest {
         repo.activate(track)
         repo.playback(1_000, 40_000, track, prepared = true, isPlaying = false)
       }
+      compose.waitUntil(5_000) { repo.state.value.phase == ReadAlongPhase.EMPTY }
       compose.setContent {
         MaterialTheme {
           LyricsView(
@@ -190,6 +191,89 @@ class GeneratedScriptTest {
       gate.countDown()
       speechGate.complete(Unit)
       compose.runOnUiThread { repo.close() }
+      db.close()
+      context.deleteDatabase(dbName)
+      files.deleteRecursively()
+      BookCatalogMetadata(context).remove(hash)
+    }
+  }
+
+  @Test fun stitchesLowercaseCrossWindowContinuationsPassesPromptAndRetriesByMidpoint() = runBlocking {
+    val dbName = "stitch-${UUID.randomUUID()}.db"
+    val db = TorrentDatabase(context, dbName)
+    val store = ReadAlongStore(db)
+    val files = File(context.cacheDir, "stitch-model-${UUID.randomUUID()}")
+    val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
+    models.file.parentFile!!.mkdirs(); models.file.writeBytes(byteArrayOf(1))
+    val hash = "stitch-hash-${UUID.randomUUID()}"
+    val observedPrompts = mutableListOf<String?>()
+    val speech = object : SpeechRecognizer {
+      override suspend fun transcribe(model: File, pcm: FloatArray): List<SpeechWord> = emptyList()
+      override suspend fun transcribeProgressiveWithPrompt(
+        model: File,
+        pcm: FloatArray,
+        focusMs: Long,
+        initialPrompt: String?,
+        onPartial: suspend (List<SpeechWord>) -> Unit,
+      ): List<SpeechWord> {
+        synchronized(observedPrompts) { observedPrompts += initialPrompt }
+        val words = listOf(
+          SpeechWord("And", 18_200, 18_500),
+          SpeechWord("then", 18_550, 18_900),
+          SpeechWord("Elijah", 19_000, 19_850),
+        )
+        onPartial(words)
+        return words
+      }
+
+      override suspend fun transcribeScriptWindow(
+        model: File,
+        pcm: FloatArray,
+        initialPrompt: String?,
+      ): List<SpeechWord> {
+        synchronized(observedPrompts) { observedPrompts += initialPrompt }
+        return listOf(
+          SpeechWord("Elijah", 1_900, 2_020),
+          SpeechWord("opened", 2_050, 2_400),
+          SpeechWord("the", 2_450, 2_600),
+          SpeechWord("door.", 2_650, 3_100),
+        )
+      }
+    }
+    val repo = ReadAlongRepository(context, store, ReadAlongAudioDecoder { _, _, _ -> FloatArray(1600) }, speech, models)
+    try {
+      val track = ReadAlongTrack(hash, 0)
+      main {
+        repo.activate(track)
+        repo.playback(1_000, 40_000, track, prepared = true, isPlaying = true)
+        repo.setVisible(true)
+        repo.generateScriptFromAudio("Caves of Steel", "Chapter 1", track)
+      }
+      eventually {
+        store.windowReady(track, "script:$hash:0", 0) &&
+          store.windowReady(track, "script:$hash:0", 20_000) &&
+          repo.state.value.lines.any { it.text.contains("door.") }
+      }
+      assertEquals(1, repo.state.value.lines.size)
+      assertEquals("And then Elijah opened the door.", repo.state.value.lines.single().text)
+      assertTrue(observedPrompts.any { it?.contains("And then Elijah") == true && it.contains("Caves of Steel") })
+
+      // retryWindow must clear a window-20s straddling line (19_850..21_200, mid 20_525) while keeping 18_200..21_100.
+      store.saveWindow(
+        track,
+        "script:$hash:0",
+        20_000L,
+        40_000L,
+        listOf(TimedLine(999L, 19_850L, 21_200L, "Straddling line.")),
+        complete = true,
+        persistText = true,
+      )
+      store.retryWindow(track, "script:$hash:0", 20_000L, 40_000L, clearTimingsInWindow = true)
+      val remaining = store.timings(track, "script:$hash:0")
+      assertTrue(remaining.none { it.id == 999L })
+      assertTrue(remaining.any { it.text == "And then Elijah opened the door." })
+    } finally {
+      main { repo.close() }
       db.close()
       context.deleteDatabase(dbName)
       files.deleteRecursively()

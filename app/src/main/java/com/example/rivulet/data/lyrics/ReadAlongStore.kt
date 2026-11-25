@@ -156,9 +156,21 @@ class ReadAlongStore(private val database: TorrentDatabase) {
         "info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>?",
         arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString()))
       if (clearTimingsInWindow) {
-        db.delete("readalong_timings",
-          "info_hash=? AND file_index=? AND book_id=? AND start_ms>=? AND start_ms<?",
-          arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), endMs.toString()))
+        val overlapFloor = (startMs - 500L).coerceAtLeast(0L)
+        db.delete(
+          "readalong_timings",
+          "info_hash=? AND file_index=? AND book_id=? AND ((start_ms>=CAST(? AS INTEGER) AND start_ms<CAST(? AS INTEGER)) OR (start_ms>=CAST(? AS INTEGER) AND ((start_ms+end_ms)/2)>=CAST(? AS INTEGER) AND ((start_ms+end_ms)/2)<CAST(? AS INTEGER)))",
+          arrayOf(
+            track.infoHash,
+            track.fileIndex.toString(),
+            bookId,
+            startMs.toString(),
+            endMs.toString(),
+            overlapFloor.toString(),
+            startMs.toString(),
+            endMs.toString(),
+          ),
+        )
       }
       db.setTransactionSuccessful()
     } finally { db.endTransaction() }

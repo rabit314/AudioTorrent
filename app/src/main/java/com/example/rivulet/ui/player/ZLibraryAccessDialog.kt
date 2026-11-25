@@ -33,7 +33,13 @@ fun ZLibraryAccessDialog(url: String, onDismiss: () -> Unit, onReady: (String, S
       ready(html.take(4 * 1024 * 1024), view.url ?: url)
     }
   }
-  DisposableEffect(Unit) { onDispose { webView?.stopLoading(); webView?.destroy() } }
+  DisposableEffect(Unit) {
+    onDispose {
+      webView?.stopLoading()
+      webView?.pauseTimers()
+      webView?.destroy()
+    }
+  }
   Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     Surface(Modifier.fillMaxSize()) {
       Column(Modifier.safeDrawingPadding()) {
@@ -60,8 +66,8 @@ fun ZLibraryAccessDialog(url: String, onDismiss: () -> Unit, onReady: (String, S
                 runCatching { ZLibraryClient.validateUrl(request.url.toString()); false }.getOrDefault(true)
               override fun onPageFinished(view: WebView, loadedUrl: String) {
                 loading = false
-                // Require actual book/search content, not an empty challenge or redirect page.
-                view.evaluateJavascript("Boolean(document.querySelector('z-bookcard, .resItemBox, .bookRow, a[href*=\"/book/\"], a[href*=\"/dl/\"]')) && !document.querySelector('input[type=password]')") { result ->
+                // Require actual book/search content, not a generic nav link on a redirect or challenge page.
+                view.evaluateJavascript("Boolean(document.querySelector('z-bookcard, .resItemBox, .bookRow, a[href*=\"/dl/\"]')) && !document.querySelector('input[type=password]')") { result ->
                   if (result == "true" && !completed) finish(view)
                 }
               }

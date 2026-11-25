@@ -60,7 +60,8 @@ class ReadAlongRepository(
   private var searchResults: List<BookEdition> = emptyList()
   private data class Lookup(val track: ReadAlongTrack, val version: Long, val request: Long,
     val query: String, val title: String, val author: String, var titleOnly: Boolean = false,
-    val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet(), val provider: TextProvider = TextProvider.AUTOMATIC)
+    val automaticKey: String? = null, val selectedTracks: Set<Int> = emptySet(), val provider: TextProvider = TextProvider.AUTOMATIC,
+    var prewarmAttempted: Boolean = false)
   private data class AutomaticResult(val editions: List<BookEdition>, val message: String?)
   private val automaticAttempts = mutableMapOf<String, AutomaticResult?>()
   private data class Download(val track: ReadAlongTrack, val version: Long, val edition: BookEdition, val indices: Set<Int>)
@@ -98,10 +99,14 @@ class ReadAlongRepository(
     override fun onConfigurationChanged(newConfig: Configuration) {}
     override fun onLowMemory() {
       speech.release()
+      decoder.release()
       if (transcribeFullTrack) setTranscribeFullTrack(false)
     }
     override fun onTrimMemory(level: Int) {
-      if (level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) speech.release()
+      if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+        speech.release()
+        decoder.release()
+      }
       if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL && transcribeFullTrack) {
         setTranscribeFullTrack(false)
       }
@@ -115,6 +120,7 @@ class ReadAlongRepository(
     generation++
     lookup?.automaticKey?.let { if (lookupJob?.isActive == true && automaticAttempts[it] == null) automaticAttempts.remove(it) }
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel()
+    decoder.release()
     pendingDownload = null
     source = null; sentences = emptyList(); sentenceTokenCounts = IntArray(0); cachedParagraphs = emptyList()
     cachedWindows.clear(); matcher = null; timings.clear(); estimated = false
@@ -388,14 +394,15 @@ class ReadAlongRepository(
         if (lookupCurrent(search)) {
           search.automaticKey?.let { automaticAttempts[it] = AutomaticResult(emptyList(), error.message) }
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error is SiteAccessRequired) {
-            ZLibraryPrewarmer.warmUp(context) { success ->
+          if (error is SiteAccessRequired && !search.prewarmAttempted) {
+            search.prewarmAttempted = true
+            ZLibraryPrewarmer.warmUp(context, forceRefresh = true) { success ->
               if (success && lookupCurrent(search) && mutable.value.accessUrl != null) {
                 mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Loading books…") }
                 lookupJob = scope.launch { runLookup(search) }
               }
             }
-          } else {
+          } else if (error !is SiteAccessRequired) {
             offerRecovery(search.track, search.version, "Retry search") {
               searchBooks(search.query, force = true, title = search.title, author = search.author,
                 automaticKey = search.automaticKey, selectedTracks = search.selectedTracks, provider = search.provider)
@@ -535,7 +542,7 @@ class ReadAlongRepository(
     search.author.isNotBlank() && !search.title.equals(search.query, true) &&
     results.none { BookSearch.matchesTitle(it, search.title) }
 
-  fun downloadEdition(edition: BookEdition, selectedTracks: Set<Int>, renderedHtml: String? = null) {
+  fun downloadEdition(edition: BookEdition, selectedTracks: Set<Int>, renderedHtml: String? = null, prewarmed: Boolean = false) {
     val track = mutable.value.track ?: return
     val version = generation
     val request = ++lookupSequence
@@ -554,14 +561,14 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         if (current(track, version) && request == lookupSequence) {
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error is SiteAccessRequired) {
-            ZLibraryPrewarmer.warmUp(context) { success ->
+          if (error is SiteAccessRequired && !prewarmed) {
+            ZLibraryPrewarmer.warmUp(context, forceRefresh = true) { success ->
               if (success && current(track, version) && request == lookupSequence && mutable.value.accessUrl != null) {
                 mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Downloading…") }
-                downloadEdition(edition, selectedTracks, renderedHtml)
+                downloadEdition(edition, selectedTracks, renderedHtml, prewarmed = true)
               }
             }
-          } else {
+          } else if (error !is SiteAccessRequired) {
             offerRecovery(track, version, "Retry ebook download") { downloadEdition(edition, selectedTracks, renderedHtml) }
           }
         }
@@ -670,6 +677,21 @@ class ReadAlongRepository(
     mutable.update { it.copy(recoveryLabel = null, recovery = null) }
   }
 
+  fun dismissLookupStatus() {
+    val state = mutable.value
+    val isLookupRecovery = state.recovery == ReadAlongRecovery.RETRY &&
+      state.recoveryLabel in setOf("Retry search", "Retry ebook download")
+    if (isLookupRecovery) recoveryAction = null
+    mutable.update {
+      it.copy(
+        lookupMessage = null,
+        accessUrl = null,
+        recoveryLabel = if (isLookupRecovery) null else it.recoveryLabel,
+        recovery = if (isLookupRecovery) null else it.recovery,
+      )
+    }
+  }
+
   private fun offerRecovery(track: ReadAlongTrack, version: Long, label: String, action: () -> Unit) {
     if (!current(track, version)) return
     recoveryAction = { if (current(track, version)) action() }
@@ -718,7 +740,11 @@ class ReadAlongRepository(
       if (current(track, version)) {
         cachedWindows.removeAll { base in it.first until it.last }
         if (isScript) {
-          timings.values.removeAll { it.startTimeMs in base until windowEnd }
+          val overlapFloor = (base - 500L).coerceAtLeast(0L)
+          timings.values.removeAll {
+            val mid = (it.startTimeMs + it.endTimeMs) / 2L
+            it.startTimeMs in base until windowEnd || (it.startTimeMs >= overlapFloor && mid in base until windowEnd)
+          }
           inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
           publishLines(isSyncingNow = false)
         }
@@ -828,21 +854,52 @@ class ReadAlongRepository(
               if (!valid()) return@launch
               cachedWindows += start..windowEnd
             } else {
-              val previousTail = timings.values
-                .filter { it.endTimeMs <= start + 500L && it.startTimeMs < start }
-                .maxByOrNull { it.endTimeMs }
-              val prevToken = previousTail?.let { ReadAlongText.tokens(it.text).lastOrNull()?.let(TranscriptAssembler::normalizedToken) }
+              val historyLines = timings.values
+                .asSequence()
+                .filter { it.startTimeMs < start && it.text.isNotBlank() }
+                .sortedBy { it.startTimeMs }
+                .toList()
+              val previousTail = historyLines.maxByOrNull { it.endTimeMs }
+              val prevTokens = historyLines
+                .takeLast(3)
+                .flatMap { ReadAlongText.tokens(it.text) }
+                .map(TranscriptAssembler::normalizedToken)
+                .filter { it.isNotEmpty() }
+                .takeLast(8)
+              val prevToken = prevTokens.lastOrNull()
               val prevEndMs = previousTail?.endTimeMs ?: Long.MIN_VALUE
+              val prevEndedSentence = previousTail?.let { TranscriptAssembler.endsSentence(it.text) } ?: true
+              val scriptPrompt = buildScriptPrompt(track, book, historyLines)
+              val effectiveWindowStart = if (previousTail != null && previousTail.endTimeMs > start + 500L) {
+                previousTail.endTimeMs.coerceAtMost(windowEnd)
+              } else {
+                start
+              }
 
               val recognized = if (!ahead) {
-                speech.transcribeProgressive(models.file, pcm, (positionMs - decodeStart).coerceAtLeast(0)) { partial ->
+                speech.transcribeProgressiveWithPrompt(
+                  models.file,
+                  pcm,
+                  (positionMs - decodeStart).coerceAtLeast(0),
+                  scriptPrompt,
+                ) { partial ->
                   ensureActive()
-                  if (!valid()) return@transcribeProgressive
+                  if (!valid()) return@transcribeProgressiveWithPrompt
                   val shifted = partial.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
                   val draft = withContext(Dispatchers.Default) {
-                    TranscriptAssembler.assembleWindow(shifted, book.id, start, windowEnd, prevToken, prevEndMs, idNamespace = "draft")
+                    TranscriptAssembler.assembleWindow(
+                      words = shifted,
+                      bookId = book.id,
+                      windowStartMs = effectiveWindowStart,
+                      windowEndMs = windowEnd,
+                      previousTailToken = prevToken,
+                      previousTailEndMs = prevEndMs,
+                      idNamespace = "draft",
+                      previousTailTokens = prevTokens,
+                      previousEndedSentence = prevEndedSentence,
+                    )
                   }
-                  if (!valid()) return@transcribeProgressive
+                  if (!valid()) return@transcribeProgressiveWithPrompt
                   inFlightWindowStartMs = start
                   inFlightWindowEndMs = windowEnd
                   inFlightWindowLines = draft
@@ -852,23 +909,56 @@ class ReadAlongRepository(
                   }
                 }
               } else {
-                speech.transcribe(models.file, pcm)
+                speech.transcribeScriptWindow(models.file, pcm, scriptPrompt)
               }
 
               if (!valid()) return@launch
               val shiftedFinal = recognized.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
-              val finalLines = withContext(Dispatchers.Default) {
-                TranscriptAssembler.assembleWindow(shiftedFinal, book.id, start, windowEnd, prevToken, prevEndMs)
+              val assembledLines = withContext(Dispatchers.Default) {
+                TranscriptAssembler.assembleWindow(
+                  words = shiftedFinal,
+                  bookId = book.id,
+                  windowStartMs = effectiveWindowStart,
+                  windowEndMs = windowEnd,
+                  previousTailToken = prevToken,
+                  previousTailEndMs = prevEndMs,
+                  previousTailTokens = prevTokens,
+                  previousEndedSentence = prevEndedSentence,
+                )
+              }
+              var persistedLines = assembledLines
+              if (previousTail != null &&
+                previousTail.endTimeMs <= start + 500L &&
+                !prevEndedSentence &&
+                previousTail.text.length < 220 &&
+                assembledLines.isNotEmpty()
+              ) {
+                val firstNew = assembledLines.first()
+                val seamGapMs = firstNew.startTimeMs - previousTail.endTimeMs
+                val firstChar = firstNew.text.firstOrNull { it.isLetterOrDigit() }
+                val isLowerCont = firstChar?.isLowerCase() == true
+                val isPronounI = firstNew.text == "I" || firstNew.text.startsWith("I ") || firstNew.text.startsWith("I'")
+                if (seamGapMs < 1_200L && (isLowerCont || isPronounI)) {
+                  val merged = previousTail.copy(
+                    endTimeMs = maxOf(previousTail.endTimeMs, firstNew.endTimeMs),
+                    text = "${previousTail.text.trimEnd()} ${firstNew.text.trimStart()}",
+                  )
+                  persistedLines = listOf(merged) + assembledLines.drop(1)
+                }
               }
               inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
               withContext(Dispatchers.IO) {
                 ensureActive()
-                store.saveWindow(track, book.id, start, windowEnd, finalLines, complete = true, persistText = true)
+                store.saveWindow(track, book.id, start, windowEnd, persistedLines, complete = true, persistText = true)
               }
               if (!valid()) return@launch
-              timings.values.removeAll { it.startTimeMs in start until windowEnd }
-              finalLines.forEach { timings[it.id] = it }
-              matchedCount = finalLines.size
+              val overlapFloor = (start - 500L).coerceAtLeast(0L)
+              timings.values.removeAll {
+                val mid = (it.startTimeMs + it.endTimeMs) / 2L
+                it.startTimeMs in start until windowEnd || (it.startTimeMs >= overlapFloor && mid in start until windowEnd)
+              }
+              persistedLines.forEach { timings[it.id] = it }
+              matchedCount = assembledLines.size
               cachedWindows += start..windowEnd
             }
             Log.d("ReadAlongPerf", "scriptWindow=$start..$windowEnd decodeMs=${decoded-began} speechMs=${android.os.SystemClock.elapsedRealtime()-decoded} lines=$matchedCount ahead=$ahead")
@@ -974,6 +1064,7 @@ class ReadAlongRepository(
           }
         }
       } finally {
+        decoder.release()
         if (request == analysisSequence) {
           analysisStartMs = -1
           inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
@@ -1408,6 +1499,37 @@ class ReadAlongRepository(
 
   fun buildExportSrt(): String = ScriptExporter.toSrt(mutable.value.lines)
 
+  private fun buildScriptPrompt(
+    track: ReadAlongTrack,
+    book: StoredReadAlongBook,
+    historyLines: List<TimedLine>,
+  ): String? {
+    val meta = catalogMetadata.book(track.infoHash)
+    val rawTitle = meta?.title?.takeIf { it.isNotBlank() } ?: book.book.title
+    val cleanTitle = rawTitle.replace(WHITESPACE_COLLAPSE_REGEX, " ").trim().take(70)
+    val cleanAuthor = meta?.author?.replace(WHITESPACE_COLLAPSE_REGEX, " ")?.trim()?.take(40).orEmpty()
+    val header = when {
+      cleanTitle.isNotEmpty() && cleanAuthor.isNotEmpty() -> "$cleanTitle by $cleanAuthor"
+      cleanTitle.isNotEmpty() -> cleanTitle
+      else -> ""
+    }
+    val tailWords = historyLines
+      .takeLast(3)
+      .joinToString(" ") { it.text.trim() }
+      .replace(WHITESPACE_COLLAPSE_REGEX, " ")
+      .trim()
+      .split(' ')
+      .filter { it.isNotEmpty() }
+      .takeLast(28)
+      .joinToString(" ")
+    return when {
+      header.isNotEmpty() && tailWords.isNotEmpty() -> "$header. $tailWords"
+      tailWords.isNotEmpty() -> tailWords
+      header.isNotEmpty() -> header
+      else -> null
+    }?.take(240)
+  }
+
   private fun current(track: ReadAlongTrack, version: Long) = mutable.value.track == track && generation == version
   private fun fail(error: Exception, track: ReadAlongTrack, version: Long) {
     if (error is CancellationException) throw error
@@ -1416,6 +1538,7 @@ class ReadAlongRepository(
   fun close() {
     scope.cancel()
     context.applicationContext.unregisterComponentCallbacks(memoryCallbacks)
+    decoder.release()
     speech.close()
   }
 

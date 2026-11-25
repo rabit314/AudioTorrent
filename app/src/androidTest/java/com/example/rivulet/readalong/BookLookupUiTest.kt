@@ -51,4 +51,69 @@ class BookLookupUiTest {
       compose.onNodeWithText("Buffering audio…").assertIsDisplayed()
     } finally { compose.runOnUiThread { repo.close() }; db.close(); context.deleteDatabase(name) }
   }
+
+  @Test fun hidesFailedLookupClutterUnderSyncedHeaderAndAllowsDismissWhenEmpty() {
+    val context = compose.activity
+    val name = "lookup-ui-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name)
+    val store = ReadAlongStore(db)
+    val failingCatalog = object : BookCatalog {
+      override fun search(query: String) = emptyList<BookEdition>()
+      override fun lookup(request: BookLookupRequest) = BookLookupResult(
+        editions = emptyList(),
+        complete = false,
+        message = "Z-Library verification needed.",
+        accessUrl = "https://zlib.li/",
+      )
+      override fun download(edition: BookEdition, renderedHtml: String?) = error("Unused")
+    }
+    val repo = ReadAlongRepository(
+      context,
+      store,
+      AudioWindowDecoder { error("No audio") },
+      library = failingCatalog,
+    )
+    try {
+      // Case 1: No attached book yet -> compact lookup card appears and can be dismissed.
+      val emptyTrack = ReadAlongTrack("empty-lookup", 0)
+      compose.runOnUiThread { repo.activate(emptyTrack) }
+      compose.waitUntil(5000) { repo.state.value.phase == ReadAlongPhase.EMPTY }
+      compose.runOnUiThread { repo.searchBooks("Test Book", force = true) }
+      compose.waitUntil(5000) { repo.state.value.lookupMessage != null }
+      compose.setContent {
+        MaterialTheme {
+          LyricsView(repo, emptyList(), "Test Book", {}, isVisible = true)
+        }
+      }
+      compose.onNodeWithText("Z-Library verification needed.").assertIsDisplayed()
+      compose.onNodeWithText("Open site access").assertIsDisplayed()
+      compose.onNodeWithText("Dismiss").performClick()
+      compose.waitForIdle()
+      compose.onAllNodesWithText("Z-Library verification needed.").assertCountEquals(0)
+      compose.onAllNodesWithText("Open site access").assertCountEquals(0)
+
+      // Case 2: Attached/loaded book -> closing Search leaves lookup clutter hidden under sync pill.
+      val bookTrack = ReadAlongTrack("loaded-lookup", 0)
+      val book = StoredReadAlongBook(
+        "loaded-id",
+        EpubBook("Loaded Book", "Author", listOf(EpubChapter(1, "c1", "c1.html", "Chapter 1", "Sentence one.", 2))),
+        "loaded.epub",
+      )
+      store.attach(bookTrack, book, setOf(0))
+      compose.runOnUiThread {
+        repo.activate(bookTrack)
+      }
+      compose.waitUntil(5000) { repo.state.value.bookId == "loaded-id" }
+      compose.onNodeWithTag("text-settings-button").performClick()
+      compose.onNodeWithText("Replace edition").performClick()
+      compose.waitUntil(5000) { repo.state.value.lookupMessage == "Z-Library verification needed." }
+      compose.onNodeWithText("Done").performClick()
+      compose.waitForIdle()
+      compose.onAllNodesWithText("Z-Library verification needed.").assertCountEquals(0)
+      compose.onAllNodesWithText("Open site access").assertCountEquals(0)
+    } finally {
+      compose.runOnUiThread { repo.close() }
+      db.close()
+      context.deleteDatabase(name)
+    }
+  }
 }

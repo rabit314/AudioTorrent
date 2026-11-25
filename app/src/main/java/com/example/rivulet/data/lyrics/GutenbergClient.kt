@@ -75,7 +75,16 @@ class GutenbergClient : GutenbergCatalog {
 /** Automatic acquisition stops at usable Gutenberg candidates; manual filters can query either source. */
 class GutenbergFirstCatalog(
   private val gutenberg: BookCatalog = GutenbergClient(),
-  private val fallback: BookCatalog = ZLibraryClient { android.webkit.CookieManager.getInstance().getCookie(it) },
+  private val fallback: BookCatalog = ZLibraryClient(
+    cookies = { android.webkit.CookieManager.getInstance().getCookie(it) },
+    saveCookies = { url, headers ->
+      runCatching {
+        val cm = android.webkit.CookieManager.getInstance()
+        headers.forEach { header -> cm.setCookie(url, header) }
+        cm.flush()
+      }
+    },
+  ),
 ) : BookCatalog {
   override fun search(query: String): List<BookEdition> = lookup(BookLookupRequest(query)).editions
   override fun lookup(request: BookLookupRequest): BookLookupResult {
@@ -105,16 +114,23 @@ class GutenbergFirstCatalog(
     } catch (error: Exception) {
       if (error is java.util.concurrent.CancellationException) throw error
       if (request.provider == TextProvider.GUTENBERG) throw error
-      warning = "Project Gutenberg is unavailable. Trying Z-Library."
+      warning = if (error is com.example.rivulet.data.catalog.CatalogHttpException && error.status == 503) {
+        "Project Gutenberg is temporarily down for maintenance (HTTP 503)."
+      } else {
+        "Project Gutenberg is unavailable."
+      }
     }
     return try {
       val other = fallback.lookup(request)
-      other.copy(editions = BookSearch.rank(publicBooks + other.editions, request.query, request.title, request.author), message = other.message ?: warning)
+      val combinedMessage = listOfNotNull(warning, other.message).distinct().joinToString(" ").ifBlank { null }
+      other.copy(editions = BookSearch.rank(publicBooks + other.editions, request.query, request.title, request.author), message = combinedMessage)
     } catch (error: SiteAccessRequired) {
-      BookLookupResult(publicBooks, "Z-Library needs a browser access check or login.", error.url, complete = false)
+      val combined = listOfNotNull(warning, "Z-Library needs a browser access check or login.").joinToString(" ")
+      BookLookupResult(publicBooks, combined, error.url, complete = false)
     } catch (error: Exception) {
       if (error is java.util.concurrent.CancellationException) throw error
-      if (publicBooks.isEmpty()) throw IOException("No text source could complete the search. ${error.message}", error)
+      val pgPrefix = warning?.let { "$it " }.orEmpty()
+      if (publicBooks.isEmpty()) throw IOException("${pgPrefix}Z-Library failed: ${error.message ?: "unavailable."}", error)
       BookLookupResult(publicBooks, "Z-Library is unavailable. Showing Gutenberg results.", complete = false)
     }
   }

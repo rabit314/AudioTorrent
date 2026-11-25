@@ -1,7 +1,8 @@
 #include <jni.h>
 #include <whisper.h>
-#include <atomic>
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <thread>
 #include <vector>
@@ -10,6 +11,213 @@ struct Engine {
     whisper_context *context;
     std::atomic<bool> cancelled{false};
 };
+
+namespace {
+
+std::vector<jchar> utf8ToUtf16(const std::string &utf8) {
+    std::vector<jchar> out;
+    out.reserve(utf8.size());
+    const size_t n = utf8.size();
+    size_t i = 0;
+    while (i < n) {
+        const auto c0 = static_cast<uint8_t>(utf8[i]);
+        uint32_t cp = 0;
+        size_t len = 0;
+        if (c0 > 0 && c0 < 0x80) {
+            cp = c0;
+            len = 1;
+        } else if ((c0 & 0xE0) == 0xC0 && i + 1 < n) {
+            const auto c1 = static_cast<uint8_t>(utf8[i + 1]);
+            if ((c1 & 0xC0) == 0x80) {
+                cp = ((c0 & 0x1Fu) << 6) | (c1 & 0x3Fu);
+                if (cp >= 0x80) len = 2;
+            }
+        } else if ((c0 & 0xF0) == 0xE0 && i + 2 < n) {
+            const auto c1 = static_cast<uint8_t>(utf8[i + 1]);
+            const auto c2 = static_cast<uint8_t>(utf8[i + 2]);
+            if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80) {
+                cp = ((c0 & 0x0Fu) << 12) | ((c1 & 0x3Fu) << 6) | (c2 & 0x3Fu);
+                if (cp >= 0x800 && !(cp >= 0xD800 && cp <= 0xDFFF)) len = 3;
+            }
+        } else if ((c0 & 0xF8) == 0xF0 && i + 3 < n) {
+            const auto c1 = static_cast<uint8_t>(utf8[i + 1]);
+            const auto c2 = static_cast<uint8_t>(utf8[i + 2]);
+            const auto c3 = static_cast<uint8_t>(utf8[i + 3]);
+            if ((c1 & 0xC0) == 0x80 && (c2 & 0xC0) == 0x80 && (c3 & 0xC0) == 0x80) {
+                cp = ((c0 & 0x07u) << 18) | ((c1 & 0x3Fu) << 12) | ((c2 & 0x3Fu) << 6) | (c3 & 0x3Fu);
+                if (cp >= 0x10000 && cp <= 0x10FFFF) len = 4;
+            }
+        }
+        if (len == 0) {
+            // Skip stray/malformed UTF-8 bytes so ART JNI NewString never aborts on incomplete BPE sequences.
+            ++i;
+            continue;
+        }
+        if (cp <= 0xFFFFu) {
+            out.push_back(static_cast<jchar>(cp));
+        } else {
+            const uint32_t adj = cp - 0x10000u;
+            out.push_back(static_cast<jchar>(0xD800u + (adj >> 10)));
+            out.push_back(static_cast<jchar>(0xDC00u + (adj & 0x3FFu)));
+        }
+        i += len;
+    }
+    return out;
+}
+
+struct WordSpan {
+    std::string text;
+    int64_t t0Cs;
+    int64_t t1Cs;
+};
+
+jobjectArray runTranscribe(
+    JNIEnv *env,
+    jlong handle,
+    jfloatArray input,
+    jboolean adaptive_context,
+    jstring initial_prompt
+) {
+    auto *engine = reinterpret_cast<Engine *>(handle);
+    const auto wordClass = env->FindClass("com/example/rivulet/data/lyrics/SpeechWord");
+    const auto ctor = env->GetMethodID(wordClass, "<init>", "(Ljava/lang/String;JJ)V");
+    const int size = env->GetArrayLength(input);
+    std::vector<float> pcm(size);
+    env->GetFloatArrayRegion(input, 0, size, pcm.data());
+
+    std::string prompt;
+    if (initial_prompt != nullptr) {
+        const char *utf = env->GetStringUTFChars(initial_prompt, nullptr);
+        if (utf != nullptr) {
+            prompt = utf;
+            env->ReleaseStringUTFChars(initial_prompt, utf);
+        }
+    }
+
+    auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    // Bound CPU use to 2 threads on mobile to preserve thermal headroom and avoid UI frame drops.
+    const auto cores = std::thread::hardware_concurrency();
+    params.n_threads = cores ? std::min(2u, cores) : 2;
+    params.language = "en";
+    params.translate = false;
+    params.no_context = true;
+    params.print_progress = params.print_realtime = params.print_special = params.print_timestamps = false;
+    params.token_timestamps = true;
+    params.max_len = 0;
+    params.split_on_word = false;
+    params.max_tokens = 128;
+    params.suppress_blank = true;
+    params.suppress_nst = true;
+    params.temperature = 0.0f;
+    params.temperature_inc = 0.0f;
+    if (!prompt.empty()) {
+        params.initial_prompt = prompt.c_str();
+        params.carry_initial_prompt = false;
+    }
+    // Keep two seconds of silence/context padding. Full-size input retains the original context.
+    // Short batches avoid repeatedly running a 30-second encoder for 12-13 seconds of speech.
+    if (adaptive_context) {
+        const int frames = (size + 319) / 320; // encoder frames are 20ms
+        params.audio_ctx = std::min(whisper_n_audio_ctx(engine->context), std::max(512, ((frames + 100 + 127) / 128) * 128));
+    }
+    params.abort_callback = [](void *data) { return static_cast<Engine *>(data)->cancelled.load(); };
+    params.abort_callback_user_data = engine;
+
+    if (whisper_full(engine->context, params, pcm.data(), size) != 0 || engine->cancelled.load()) {
+        return env->NewObjectArray(0, wordClass, nullptr);
+    }
+
+    const whisper_token eot = whisper_token_eot(engine->context);
+    const int segCount = whisper_full_n_segments(engine->context);
+    std::vector<WordSpan> words;
+    words.reserve(segCount * 12);
+
+    for (int i = 0; i < segCount; ++i) {
+        const int64_t segT0 = std::max<int64_t>(0, whisper_full_get_segment_t0(engine->context, i));
+        const int64_t segT1 = std::max<int64_t>(segT0, whisper_full_get_segment_t1(engine->context, i));
+        const int tokCount = whisper_full_n_tokens(engine->context, i);
+
+        std::string curWord;
+        int64_t curT0 = -1;
+        int64_t curT1 = -1;
+
+        auto flushWord = [&]() {
+            if (!curWord.empty()) {
+                words.push_back(WordSpan{curWord, std::max<int64_t>(0, curT0), std::max(curT0, curT1)});
+                curWord.clear();
+                curT0 = -1;
+                curT1 = -1;
+            }
+        };
+
+        for (int t = 0; t < tokCount; ++t) {
+            const auto tokData = whisper_full_get_token_data(engine->context, i, t);
+            if (tokData.id >= eot) continue;
+            const char *raw = whisper_full_get_token_text(engine->context, i, t);
+            if (!raw || raw[0] == '\0') continue;
+
+            const std::string piece(raw);
+            const bool startsNewWord = piece[0] == ' ' || piece[0] == '\t' || piece[0] == '\r' || piece[0] == '\n';
+            const size_t firstNonWs = piece.find_first_not_of(" \t\r\n");
+            if (firstNonWs == std::string::npos) {
+                flushWord();
+                continue;
+            }
+            if (startsNewWord) {
+                flushWord();
+            }
+
+            int64_t t0 = whisper_full_get_token_t0(engine->context, i, t);
+            int64_t t1 = whisper_full_get_token_t1(engine->context, i, t);
+            if (t0 < 0) t0 = segT0;
+            if (t1 < t0) t1 = std::max(t0, segT1);
+            if (t0 < segT0) t0 = segT0;
+            if (segT1 > segT0 && t1 > segT1) t1 = segT1;
+            if (t1 < t0) t1 = t0;
+
+            if (curWord.empty()) {
+                curT0 = t0;
+                curT1 = t1;
+            } else {
+                curT0 = std::min(curT0, t0);
+                curT1 = std::max(curT1, t1);
+            }
+            curWord.append(piece, firstNonWs, std::string::npos);
+        }
+        flushWord();
+    }
+
+    auto result = env->NewObjectArray(static_cast<jsize>(words.size()), wordClass, nullptr);
+    jsize outIndex = 0;
+    for (const auto &w : words) {
+        const auto utf16 = utf8ToUtf16(w.text);
+        if (utf16.empty()) continue;
+        auto text = env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
+        auto word = env->NewObject(
+            wordClass,
+            ctor,
+            text,
+            static_cast<jlong>(w.t0Cs * 10),
+            static_cast<jlong>(w.t1Cs * 10)
+        );
+        env->SetObjectArrayElement(result, outIndex++, word);
+        env->DeleteLocalRef(word);
+        env->DeleteLocalRef(text);
+    }
+    if (outIndex == static_cast<jsize>(words.size())) {
+        return result;
+    }
+    auto trimmed = env->NewObjectArray(outIndex, wordClass, nullptr);
+    for (jsize k = 0; k < outIndex; ++k) {
+        auto elem = env->GetObjectArrayElement(result, k);
+        env->SetObjectArrayElement(trimmed, k, elem);
+        env->DeleteLocalRef(elem);
+    }
+    env->DeleteLocalRef(result);
+    return trimmed;
+}
+
+} // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCreate(JNIEnv *env, jobject, jstring path) {
@@ -33,47 +241,26 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeResetCancel(JNIEnv *, j
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(JNIEnv *env, jobject, jlong handle, jfloatArray input, jboolean adaptive_context) {
-    auto *engine = reinterpret_cast<Engine *>(handle);
-    const auto wordClass = env->FindClass("com/example/rivulet/data/lyrics/SpeechWord");
-    const auto ctor = env->GetMethodID(wordClass, "<init>", "(Ljava/lang/String;JJ)V");
-    const int size = env->GetArrayLength(input);
-    std::vector<float> pcm(size);
-    env->GetFloatArrayRegion(input, 0, size, pcm.data());
-    auto params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    // Bound CPU use to 2 threads on mobile to preserve thermal headroom and avoid UI frame drops.
-    const auto cores = std::thread::hardware_concurrency();
-    params.n_threads = cores ? std::min(2u, cores) : 2;
-    params.language = "en";
-    params.translate = false;
-    params.no_context = true;
-    params.print_progress = params.print_realtime = params.print_special = params.print_timestamps = false;
-    params.token_timestamps = true;
-    params.max_len = 1;
-    params.split_on_word = true;
-    params.temperature = 0.0f;
-    params.temperature_inc = 0.0f;
-    // Keep two seconds of silence/context padding. Full-size input retains the original context.
-    // Short batches avoid repeatedly running a 30-second encoder for 12 seconds of speech.
-    if (adaptive_context) {
-        const int frames = (size + 319) / 320; // encoder frames are 20ms
-        params.audio_ctx = std::min(whisper_n_audio_ctx(engine->context), std::max(512, ((frames + 100 + 127) / 128) * 128));
-    }
-    params.abort_callback = [](void *data) { return static_cast<Engine *>(data)->cancelled.load(); };
-    params.abort_callback_user_data = engine;
-    if (whisper_full(engine->context, params, pcm.data(), size) != 0 || engine->cancelled.load()) return env->NewObjectArray(0, wordClass, nullptr);
-    const int count = whisper_full_n_segments(engine->context);
-    auto result = env->NewObjectArray(count, wordClass, nullptr);
-    for (int i = 0; i < count; ++i) {
-        auto text = env->NewStringUTF(whisper_full_get_segment_text(engine->context, i));
-        auto word = env->NewObject(wordClass, ctor, text,
-            static_cast<jlong>(whisper_full_get_segment_t0(engine->context, i) * 10),
-            static_cast<jlong>(whisper_full_get_segment_t1(engine->context, i) * 10));
-        env->SetObjectArrayElement(result, i, word);
-        env->DeleteLocalRef(word);
-        env->DeleteLocalRef(text);
-    }
-    return result;
+Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(
+    JNIEnv *env,
+    jobject,
+    jlong handle,
+    jfloatArray input,
+    jboolean adaptive_context
+) {
+    return runTranscribe(env, handle, input, adaptive_context, nullptr);
+}
+
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeWithPrompt(
+    JNIEnv *env,
+    jobject,
+    jlong handle,
+    jfloatArray input,
+    jboolean adaptive_context,
+    jstring initial_prompt
+) {
+    return runTranscribe(env, handle, input, adaptive_context, initial_prompt);
 }
 
 extern "C" JNIEXPORT void JNICALL

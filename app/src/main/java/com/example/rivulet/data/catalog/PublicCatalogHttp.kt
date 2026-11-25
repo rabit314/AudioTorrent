@@ -14,7 +14,12 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class CatalogHttpException(val status: Int, host: String) : IOException("$host returned HTTP $status. Please try again later.")
+class CatalogHttpException(
+  val status: Int,
+  host: String,
+  message: String = if (status == 503) "$host is temporarily down for maintenance (HTTP 503). Please try again later."
+  else "$host returned HTTP $status. Please try again later.",
+) : IOException(message)
 
 /** Public clients never share the authenticated catalog's cookies. Every redirect is checked. */
 class PublicCatalogHttp(private val domains: Set<String>, client: OkHttpClient = OkHttpClient()) {

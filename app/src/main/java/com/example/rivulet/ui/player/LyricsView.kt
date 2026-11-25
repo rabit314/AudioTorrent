@@ -369,7 +369,31 @@ fun LyricsView(
       }
     }
     HorizontalDivider(thickness = 0.5.dp, color = palette.mutedText.copy(alpha = 0.16f))
-    if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, showAhead = false, textColor = palette.mutedText)
+    if (!showSearch) {
+      val isLookupRecovery = state.recovery == ReadAlongRecovery.RETRY &&
+        state.recoveryLabel in setOf("Retry search", "Retry ebook download")
+      val readerStatusState = if (state.bookId != null) {
+        state.copy(
+          lookupMessage = null,
+          accessUrl = null,
+          recoveryLabel = if (isLookupRecovery) null else state.recoveryLabel,
+          recovery = if (isLookupRecovery) null else state.recovery,
+        )
+      } else {
+        state
+      }
+      ReadAlongStatus(
+        state = readerStatusState,
+        onRetry = repository::retry,
+        onImport = importFile,
+        onDownloadModel = repository::downloadModel,
+        onOpenAccess = { showAccess = true },
+        onDismissLookup = repository::dismissLookupStatus,
+        showAhead = false,
+        compactLookup = state.bookId == null,
+        textColor = palette.mutedText,
+      )
+    }
     exportFeedback?.let { feedback ->
       Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(feedback, style = MaterialTheme.typography.labelSmall, color = palette.accent, modifier = Modifier.weight(1f))
@@ -465,7 +489,7 @@ fun LyricsView(
   }
 
   if (showSearch && isVisible) AlertDialog(
-    onDismissRequest = { showSearch = false }, title = { Text("Find book text") },
+    onDismissRequest = { showSearch = false; if (state.bookId != null) repository.dismissLookupStatus() }, title = { Text("Find book text") },
     text = { Column(Modifier.fillMaxWidth().heightIn(max = 480.dp)) {
       OutlinedTextField(query, { query = it }, label = { Text("Book title or author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
       Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -483,7 +507,7 @@ fun LyricsView(
           BookEditionRow(edition, onSelect = { repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
         }
       }
-    } }, confirmButton = { TextButton(onClick = { showSearch = false }) { Text("Done") } },
+    } }, confirmButton = { TextButton(onClick = { showSearch = false; if (state.bookId != null) repository.dismissLookupStatus() }) { Text("Done") } },
   )
   if (showTracks && isVisible) AlertDialog(
     onDismissRequest = { showTracks = false }, title = { Text("Attach text to audio tracks") },
@@ -1020,6 +1044,7 @@ private fun BookNavigationDialog(
 }
 
 /** One status area for both acquisition and synchronization, including operation-specific recovery. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ReadAlongStatus(
   state: ReadAlongState,
@@ -1027,21 +1052,64 @@ fun ReadAlongStatus(
   onImport: () -> Unit,
   onDownloadModel: () -> Unit,
   onOpenAccess: () -> Unit = {},
+  onDismissLookup: (() -> Unit)? = null,
   showAhead: Boolean = true,
+  compactLookup: Boolean = false,
   textColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
+  val hasLookupNotice = state.lookupMessage != null || state.accessUrl != null ||
+    (state.recovery == ReadAlongRecovery.RETRY && state.recoveryLabel in setOf("Retry search", "Retry ebook download"))
+  val showCompactCard = compactLookup && hasLookupNotice && state.progressLabel == null
   Column(Modifier.fillMaxWidth()) {
     state.progressLabel?.let { label ->
       LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("readalong-progress"))
       Text(label, style = MaterialTheme.typography.bodySmall, color = textColor)
     }
-    if (state.progressLabel == null) listOfNotNull(state.lookupMessage, state.message.takeUnless { state.correction.isEditing }).distinct().forEach {
-      Text(it, style = MaterialTheme.typography.bodySmall, color = textColor, modifier = Modifier.padding(vertical = 4.dp))
+    if (showCompactCard) {
+      Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("compact-lookup-status"),
+      ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+          state.lookupMessage?.let { msg ->
+            Text(msg, style = MaterialTheme.typography.labelSmall, color = textColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          }
+          state.message.takeUnless { state.correction.isEditing || it == state.lookupMessage }?.let { msg ->
+            Text(msg, style = MaterialTheme.typography.labelSmall, color = textColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+          }
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            if (state.accessUrl != null) {
+              TextButton(onClick = onOpenAccess, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp), modifier = Modifier.defaultMinSize(minHeight = 32.dp)) {
+                Text("Open site access", style = MaterialTheme.typography.labelMedium)
+              }
+            }
+            state.recoveryLabel?.let { label ->
+              TextButton(
+                onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.defaultMinSize(minHeight = 32.dp),
+              ) { Text(label, style = MaterialTheme.typography.labelMedium) }
+            }
+            if (onDismissLookup != null) {
+              TextButton(onClick = onDismissLookup, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp), modifier = Modifier.defaultMinSize(minHeight = 32.dp)) {
+                Text("Dismiss", style = MaterialTheme.typography.labelMedium)
+              }
+            }
+          }
+        }
+      }
+    } else {
+      if (state.progressLabel == null) {
+        listOfNotNull(state.lookupMessage, state.message.takeUnless { state.correction.isEditing }).distinct().forEach {
+          Text(it, style = MaterialTheme.typography.bodySmall, color = textColor, modifier = Modifier.padding(vertical = 4.dp))
+        }
+      }
+      state.recoveryLabel?.let { label ->
+        TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
+      }
+      if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
     }
-    state.recoveryLabel?.let { label ->
-      TextButton(onClick = if (state.recovery == ReadAlongRecovery.PICK_FILE) onImport else onRetry) { Text(label) }
-    }
-    if (state.accessUrl != null) TextButton(onClick = onOpenAccess) { Text("Open site access") }
     if (state.preparingAhead && showAhead) Text("Preparing the next passage…", style = MaterialTheme.typography.labelSmall, color = textColor)
     if (state.phase == ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null && !state.correction.isEditing) TextButton(onClick = onDownloadModel) { Text("Download speech model · 60 MB") }
   }

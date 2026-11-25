@@ -33,16 +33,16 @@ object ZLibraryPrewarmer {
    * Triggers a silent, headless pre-warm of Z-Library cookies.
    * Safe to call from any thread and handles headless/test environments gracefully.
    */
-  fun warmUp(context: Context, onComplete: ((Boolean) -> Unit)? = null) {
+  fun warmUp(context: Context, forceRefresh: Boolean = false, onComplete: ((Boolean) -> Unit)? = null) {
     if (Looper.myLooper() != Looper.getMainLooper()) {
-      mainHandler.post { warmUp(context, onComplete) }
+      mainHandler.post { warmUp(context, forceRefresh, onComplete) }
       return
     }
 
     val now = System.currentTimeMillis()
     val hasValidCookies = hasClearanceCookie()
 
-    if (hasValidCookies && (now - lastWarmedAt < COOLDOWN_MS)) {
+    if (!forceRefresh && hasValidCookies && (now - lastWarmedAt < COOLDOWN_MS)) {
       onComplete?.invoke(true)
       return
     }
@@ -63,23 +63,49 @@ object ZLibraryPrewarmer {
     }
   }
 
+  private var activePollRunnable: Runnable? = null
+  private var activeTimeoutRunnable: Runnable? = null
+
   @SuppressLint("SetJavaScriptEnabled")
   private fun startHeadlessLoad(context: Context) {
     val timeoutRunnable = Runnable {
       Log.d(TAG, "Pre-warming timed out")
       finish(hasClearanceCookie())
     }
+    activeTimeoutRunnable = timeoutRunnable
 
     val webView = try {
       WebView(context)
     } catch (t: Throwable) {
       Log.d(TAG, "Could not create headless WebView: ${t.message}")
       mainHandler.removeCallbacks(timeoutRunnable)
+      activeTimeoutRunnable = null
       finish(false)
       return
     }
 
     headlessWebView = webView
+
+    fun evaluateReadiness(view: WebView, attempt: Int = 0) {
+      if (!isWarming || headlessWebView !== view) return
+      runCatching { CookieManager.getInstance().flush() }
+      view.evaluateJavascript("document.title") { rawTitle ->
+        if (!isWarming || headlessWebView !== view) return@evaluateJavascript
+        val title = rawTitle?.lowercase()?.trim('"').orEmpty()
+        val isChallenge = isChallengeTitle(title)
+        val ready = !isChallenge && title.isNotBlank() && hasClearanceCookie()
+        if (ready) {
+          Log.d(TAG, "Pre-warming succeeded after ${attempt} polls")
+          mainHandler.removeCallbacks(timeoutRunnable)
+          lastWarmedAt = System.currentTimeMillis()
+          finish(true)
+        } else if (attempt < 36) {
+          val poll = Runnable { evaluateReadiness(view, attempt + 1) }
+          activePollRunnable = poll
+          mainHandler.postDelayed(poll, 450L)
+        }
+      }
+    }
 
     try {
       webView.settings.apply {
@@ -99,17 +125,8 @@ object ZLibraryPrewarmer {
           runCatching { ZLibraryClient.validateUrl(request.url.toString()); false }.getOrDefault(true)
 
         override fun onPageFinished(view: WebView, loadedUrl: String) {
-          runCatching { CookieManager.getInstance().flush() }
-          view.evaluateJavascript("document.title") { rawTitle ->
-            val title = rawTitle?.lowercase()?.trim('"').orEmpty()
-            val isChallenge = title.contains("just a moment") || title.contains("checking your browser")
-            val ready = !isChallenge && hasClearanceCookie()
-            if (ready) {
-              mainHandler.removeCallbacks(timeoutRunnable)
-              lastWarmedAt = System.currentTimeMillis()
-              finish(true)
-            }
-          }
+          activePollRunnable?.let { mainHandler.removeCallbacks(it) }
+          evaluateReadiness(view, 0)
         }
 
         @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
@@ -129,11 +146,36 @@ object ZLibraryPrewarmer {
   }
 
   fun hasClearanceCookie(): Boolean = runCatching {
-    val cookie = CookieManager.getInstance().getCookie(ZLibraryClient.BASE)
-    cookie != null && (cookie.contains("cf_clearance") || cookie.contains("remix_userkey"))
+    hasClearanceToken(CookieManager.getInstance().getCookie(ZLibraryClient.BASE))
   }.getOrDefault(false)
 
+  internal fun hasClearanceToken(cookie: String?): Boolean {
+    if (cookie.isNullOrBlank()) return false
+    return cookie.split(';').any { part ->
+      val eq = part.indexOf('=')
+      if (eq <= 0) false
+      else {
+        val name = part.substring(0, eq).trim()
+        val value = part.substring(eq + 1).trim()
+        value.isNotEmpty() && name in CLEARANCE_COOKIE_NAMES
+      }
+    }
+  }
+
+  internal fun isChallengeTitle(rawTitle: String): Boolean {
+    val title = rawTitle.lowercase()
+    return title.contains("just a moment") ||
+      title.contains("checking your browser") ||
+      title.contains("wait a moment")
+  }
+
+  private val CLEARANCE_COOKIE_NAMES = setOf("c_token", "cf_clearance", "remix_userkey")
+
   private fun finish(success: Boolean) {
+    activeTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+    activeTimeoutRunnable = null
+    activePollRunnable?.let { mainHandler.removeCallbacks(it) }
+    activePollRunnable = null
     runCatching { CookieManager.getInstance().flush() }
     runCatching {
       headlessWebView?.stopLoading()

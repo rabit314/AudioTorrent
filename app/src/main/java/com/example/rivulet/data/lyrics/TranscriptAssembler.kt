@@ -53,6 +53,7 @@ object TranscriptAssembler {
     windowEndMs: Long,
     previousTailToken: String? = null,
     previousTailEndMs: Long = Long.MIN_VALUE,
+    previousTailTokens: List<String> = emptyList(),
   ): List<SpeechWord> {
     if (words.isEmpty() || windowEndMs <= windowStartMs) return emptyList()
     val filtered = ArrayList<SpeechWord>(words.size)
@@ -67,11 +68,24 @@ object TranscriptAssembler {
     }
     if (filtered.isEmpty()) return emptyList()
 
-    // Deduplicate overlap edge token if Whisper emitted the same word right across the seam.
-    if (!previousTailToken.isNullOrBlank()) {
-      val firstNorm = normalizedToken(filtered.first().text)
-      if (firstNorm == previousTailToken && filtered.first().startMs - previousTailEndMs <= 450L) {
-        filtered.removeAt(0)
+    // Deduplicate overlap phrases (1..8 tokens) if Whisper re-emitted the tail of the previous window.
+    val tailNorms = if (previousTailTokens.isNotEmpty()) {
+      previousTailTokens.map(::normalizedToken).filter { it.isNotEmpty() }
+    } else {
+      listOfNotNull(previousTailToken?.let(::normalizedToken)?.takeIf { it.isNotEmpty() })
+    }
+    if (tailNorms.isNotEmpty()) {
+      val maxK = minOf(8, tailNorms.size, filtered.size)
+      for (k in maxK downTo 1) {
+        val gapMs = filtered.first().startMs - previousTailEndMs
+        val maxGap = if (k >= 2) 1_500L else 600L
+        if (gapMs > maxGap) continue
+        val tailSlice = tailNorms.subList(tailNorms.size - k, tailNorms.size)
+        val matches = (0 until k).all { idx -> normalizedToken(filtered[idx].text) == tailSlice[idx] }
+        if (matches) {
+          repeat(k) { filtered.removeAt(0) }
+          break
+        }
       }
     }
     if (filtered.isEmpty()) return emptyList()
@@ -92,14 +106,24 @@ object TranscriptAssembler {
     previousTailToken: String? = null,
     previousTailEndMs: Long = Long.MIN_VALUE,
     idNamespace: String = "script",
+    previousTailTokens: List<String> = emptyList(),
+    previousEndedSentence: Boolean = true,
   ): List<TimedLine> {
-    val cleanWords = filterWindowWords(words, windowStartMs, windowEndMs, previousTailToken, previousTailEndMs)
+    val cleanWords = filterWindowWords(
+      words = words,
+      windowStartMs = windowStartMs,
+      windowEndMs = windowEndMs,
+      previousTailToken = previousTailToken,
+      previousTailEndMs = previousTailEndMs,
+      previousTailTokens = previousTailTokens,
+    )
     if (cleanWords.isEmpty()) return emptyList()
 
     val result = ArrayList<TimedLine>()
     val buffer = ArrayList<SpeechWord>()
     var charEstimate = 0
-    var capitalizeNext = true
+    val entryGapMs = if (previousTailEndMs > Long.MIN_VALUE) cleanWords.first().startMs - previousTailEndMs else Long.MAX_VALUE
+    var capitalizeNext = previousEndedSentence || entryGapMs >= 1_800L
 
     fun flushBuffer(nextStartsSentence: Boolean) {
       if (buffer.isEmpty()) return
@@ -196,7 +220,7 @@ object TranscriptAssembler {
   }
 
   private fun collapseHallucinationLoops(words: List<SpeechWord>): List<SpeechWord> {
-    if (words.size < 4) return words
+    if (words.size < 2) return words
     val norms = words.map { normalizedToken(it.text) }
     val out = ArrayList<SpeechWord>(words.size)
     var i = 0
@@ -217,6 +241,20 @@ object TranscriptAssembler {
           i += repeats * n
           skipped = true
           break
+        }
+      }
+      if (!skipped && i + 1 < words.size && norms[i].isNotEmpty() && norms[i] == norms[i + 1]) {
+        val first = words[i]
+        val second = words[i + 1]
+        val gapMs = second.startMs - first.endMs
+        val noSentenceOrClause = !endsSentence(first.text) && !isClauseBreak(first.text)
+        val quoteMismatch = (first.text.contains('"') != second.text.contains('"')) ||
+          (first.text.contains('“') != second.text.contains('“'))
+        if (noSentenceOrClause && gapMs <= 200L && (norms[i].length >= 4 || quoteMismatch || gapMs <= 0L)) {
+          val keepSecond = (endsSentence(second.text) || isClauseBreak(second.text)) && !quoteMismatch
+          out += if (keepSecond) second else first
+          i += 2
+          skipped = true
         }
       }
       if (!skipped) {

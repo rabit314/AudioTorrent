@@ -205,4 +205,53 @@ class CatalogIntegrationTest {
     assertTrue(LibriVoxClient.matches(book, "Pride Prejudice Jane Austen"))
     assertFalse(LibriVoxClient.matches(book, "Pride Dickens"))
   }
+
+  @Test fun gutenberg503ReportsMaintenanceAndZLibCTokenChallengeRequestsAccess() {
+    assertTrue(ZLibraryClient.needsAccess(503, "<html><title>Checking your browser ...</title><script>document.cookie='c_token=abc';</script></html>"))
+    assertFalse(ZLibraryClient.needsAccess(200, "<html><title>Z-Library</title><body>Books</body></html>"))
+    assertTrue(ZLibraryPrewarmer.hasClearanceToken("bsrv=1; c_token=pow123; c_time=99"))
+    assertTrue(ZLibraryPrewarmer.hasClearanceToken("cf_clearance=xyz"))
+    assertTrue(ZLibraryPrewarmer.hasClearanceToken("remix_userkey=u1"))
+    assertFalse(ZLibraryPrewarmer.hasClearanceToken("bsrv=only_session; c_token="))
+
+    val transport = OkHttpClient.Builder().addInterceptor { chain ->
+      Response.Builder()
+        .request(chain.request())
+        .protocol(Protocol.HTTP_1_1)
+        .code(503)
+        .message("Service Unavailable")
+        .body("<html><title>Temporarily Down for Maintenance</title></html>".toResponseBody())
+        .build()
+    }.build()
+    try {
+      val pgHttp = PublicCatalogHttp(setOf("gutenberg.org"), transport)
+      val thrown = try {
+        pgHttp.text("https://www.gutenberg.org/ebooks/search.opds/?query=test")
+        null
+      } catch (e: CatalogHttpException) {
+        e
+      }
+      assertNotNull(thrown)
+      assertEquals(503, thrown!!.status)
+      assertTrue(thrown.message?.contains("maintenance", ignoreCase = true) == true)
+
+      val pg = object : GutenbergCatalog {
+        override fun byId(id: String): List<BookEdition> = emptyList()
+        override fun search(query: String): List<BookEdition> = throw thrown
+        override fun download(edition: BookEdition, renderedHtml: String?) = error("unused")
+      }
+      val zlib = object : BookCatalog {
+        override fun search(query: String): List<BookEdition> = throw SiteAccessRequired(ZLibraryClient.BASE)
+        override fun download(edition: BookEdition, renderedHtml: String?): Triple<ByteArray, String, String> = error("unused")
+      }
+      val outcome = GutenbergFirstCatalog(pg, zlib).lookup(BookLookupRequest(identity.query, identity.title, identity.author))
+      assertTrue(outcome.editions.isEmpty())
+      assertFalse(outcome.complete)
+      assertEquals(ZLibraryClient.BASE, outcome.accessUrl)
+      assertTrue(outcome.message?.contains("Gutenberg", ignoreCase = true) == true)
+    } finally {
+      transport.dispatcher.executorService.shutdownNow()
+      transport.connectionPool.evictAll()
+    }
+  }
 }

@@ -48,6 +48,18 @@ class AudioPreparationTest {
     val merged = SpeechBatches.merge(mapOf(a to listOf(SpeechWord("before", 8000, 8500), SpeechWord("overlap", 10_000, 10_400)),
       b to listOf(SpeechWord("overlap", 10_000, 10_400), SpeechWord("after", 11_000, 11_500))))
     assertEquals(listOf("before", "overlap", "after"), merged.map { it.text })
+
+    val balanced = SpeechBatches.planBalanced(24 * 16_000)
+    assertEquals(2, balanced.size)
+    assertEquals(0L, balanced[0].startMs)
+    assertEquals(13_000L, balanced[0].endMs)
+    assertEquals(11_000L, balanced[1].startMs)
+    assertEquals(24_000L, balanced[1].endMs)
+    val seamMerged = SpeechBatches.merge(mapOf(
+      balanced[0] to listOf(SpeechWord("hello", 11_800, 12_150)),
+      balanced[1] to listOf(SpeechWord("Hello", 11_900, 12_250), SpeechWord("world", 12_300, 12_700)),
+    ))
+    assertEquals(listOf("hello", "world"), seamMerged.map { it.text })
   }
 
   @Test fun timestampRoundingAcrossCodecBuffersDoesNotDropSamples() {

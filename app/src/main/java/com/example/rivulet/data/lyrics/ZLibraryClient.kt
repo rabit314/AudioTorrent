@@ -1,5 +1,8 @@
 package com.example.rivulet.data.lyrics
 
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -26,14 +29,37 @@ interface BookCatalog {
   fun download(edition: BookEdition, renderedHtml: String? = null): Triple<ByteArray, String, String>
 }
 
-class ZLibraryClient(private val cookies: (String) -> String? = { null }) : BookCatalog {
+class ZLibraryClient(
+  private val cookies: (String) -> String? = { null },
+  private val saveCookies: (String, List<String>) -> Unit = { _, _ -> },
+) : BookCatalog {
   private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
+    .cookieJar(object : CookieJar {
+      override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        if (runCatching { validateUrl(url.toString()) }.isFailure) return emptyList()
+        val raw = cookies(url.toString())?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return raw.split(';').mapNotNull { entry ->
+          val eq = entry.indexOf('=')
+          if (eq <= 0) null
+          else {
+            val name = entry.substring(0, eq).trim()
+            val value = entry.substring(eq + 1).trim()
+            if (name.isEmpty()) null
+            else runCatching {
+              Cookie.Builder().name(name).value(value).domain(url.host).path("/").secure().build()
+            }.getOrNull()
+          }
+        }
+      }
+
+      override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        if (cookies.isEmpty() || runCatching { validateUrl(url.toString()) }.isFailure) return
+        saveCookies(url.toString(), cookies.map { it.toString() })
+      }
+    })
     .addNetworkInterceptor { chain ->
-      val url = chain.request().url.toString()
-      validateUrl(url)
-      val builder = chain.request().newBuilder().removeHeader("Cookie")
-      cookies(url)?.takeIf { it.isNotBlank() }?.let { builder.header("Cookie", it) }
-      chain.proceed(builder.build())
+      validateUrl(chain.request().url.toString())
+      chain.proceed(chain.request())
     }.build()
 
   override fun search(query: String): List<BookEdition> {
@@ -93,8 +119,16 @@ class ZLibraryClient(private val cookies: (String) -> String? = { null }) : Book
     fun needsAccess(code: Int, html: String): Boolean {
       val doc = Jsoup.parse(html)
       val title = doc.title().lowercase()
-      return code in setOf(401, 403) || title.contains("checking your browser") || title.contains("just a moment") ||
-        doc.selectFirst("input[type=password]") != null || doc.selectFirst("[class*=captcha], [id*=captcha]") != null
+      val challengePage = title.contains("checking your browser") ||
+        title.contains("just a moment") ||
+        title.contains("wait a moment") ||
+        html.contains("c_token=", ignoreCase = true) ||
+        html.contains("cookies are required", ignoreCase = true)
+      return code in setOf(401, 403) ||
+        (code in setOf(429, 503) && challengePage) ||
+        challengePage ||
+        doc.selectFirst("input[type=password]") != null ||
+        doc.selectFirst("[class*=captcha], [id*=captcha]") != null
     }
 
     fun parseResults(html: String, baseUrl: String): List<BookEdition> {
