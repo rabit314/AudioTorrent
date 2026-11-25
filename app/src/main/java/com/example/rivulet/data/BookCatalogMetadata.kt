@@ -15,6 +15,10 @@ class BookCatalogMetadata(context: Context) {
   fun saveSpeed(hash: String, speed: Float) {
     preferences.edit().putFloat("$hash:speed", speed.coerceIn(0.5f, 3.0f)).apply()
   }
+  fun isScriptModeEnabled(hash: String): Boolean = preferences.getBoolean("$hash:scriptMode", false)
+  fun setScriptModeEnabled(hash: String, enabled: Boolean) {
+    preferences.edit().putBoolean("$hash:scriptMode", enabled).apply()
+  }
   fun book(hash: String): CatalogBook? = preferences.getString("$hash:book", null)?.let { json ->
     books[hash]?.takeIf { it.first == json }?.let { return it.second }
     runCatching {
@@ -39,6 +43,6 @@ class BookCatalogMetadata(context: Context) {
   }
   fun remove(hash: String) {
     books.remove(hash)
-    preferences.edit().remove(hash).remove("$hash:book").remove("$hash:speed").apply()
+    preferences.edit().remove(hash).remove("$hash:book").remove("$hash:speed").remove("$hash:scriptMode").apply()
   }
 }

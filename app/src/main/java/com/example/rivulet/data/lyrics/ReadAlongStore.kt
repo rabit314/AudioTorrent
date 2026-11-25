@@ -99,17 +99,26 @@ class ReadAlongStore(private val database: TorrentDatabase) {
     buildList { while (c.moveToNext()) add(TimedLine(c.getLong(c.getColumnIndexOrThrow("sentence_id")), c.getLong(c.getColumnIndexOrThrow("start_ms")), c.getLong(c.getColumnIndexOrThrow("end_ms")), c.getString(c.getColumnIndexOrThrow("text")) ?: "")) }
   }
 
-  fun saveWindow(track: ReadAlongTrack, bookId: String, startMs: Long, endMs: Long, lines: List<TimedLine>, complete: Boolean = true) {
+  fun saveWindow(
+    track: ReadAlongTrack,
+    bookId: String,
+    startMs: Long,
+    endMs: Long,
+    lines: List<TimedLine>,
+    complete: Boolean = true,
+    persistText: Boolean = false,
+  ) {
     val db = database.writableDatabase
     db.beginTransaction()
     try {
       // A delayed result must not write into a replaced attachment.
       val current = db.rawQuery("SELECT book_id FROM readalong_tracks WHERE info_hash=? AND file_index=?", arrayOf(track.infoHash, track.fileIndex.toString())).use { if (it.moveToFirst()) it.getString(0) else null }
       if (current != bookId) return
-      // Lean storage: store timestamps without duplicating sentence text strings in SQLite
+      // Lean storage for matched EPUBs (`""`); generated scripts store sentences directly in `text`.
       lines.filter { it.isTimed }.forEach { line -> db.insertWithOnConflict("readalong_timings", null, ContentValues().apply {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId)
-        put("sentence_id", line.id); put("start_ms", line.startTimeMs); put("end_ms", line.endTimeMs); put("text", "")
+        put("sentence_id", line.id); put("start_ms", line.startTimeMs); put("end_ms", line.endTimeMs)
+        put("text", if (persistText) line.text else "")
       }, SQLiteDatabase.CONFLICT_REPLACE) }
       if (complete) db.insertWithOnConflict("readalong_windows", null, ContentValues().apply {
         put("info_hash", track.infoHash); put("file_index", track.fileIndex); put("book_id", bookId); put("start_ms", startMs); put("end_ms", endMs)
@@ -132,11 +141,61 @@ class ReadAlongStore(private val database: TorrentDatabase) {
     buildList { while (c.moveToNext()) add(c.getLong(0)..c.getLong(1)) }
   }
 
-  /** Explicit retry invalidates only completion markers; confident timestamps stay immutable. */
-  fun retryWindow(track: ReadAlongTrack, bookId: String, startMs: Long) {
-    database.writableDatabase.delete("readalong_windows",
-      "info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>?",
-      arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString()))
+  /** Explicit retry invalidates completion markers; generated scripts also replace lines in that span. */
+  fun retryWindow(
+    track: ReadAlongTrack,
+    bookId: String,
+    startMs: Long,
+    endMs: Long = startMs + 20_000L,
+    clearTimingsInWindow: Boolean = false,
+  ) {
+    val db = database.writableDatabase
+    db.beginTransaction()
+    try {
+      db.delete("readalong_windows",
+        "info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>?",
+        arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString()))
+      if (clearTimingsInWindow) {
+        db.delete("readalong_timings",
+          "info_hash=? AND file_index=? AND book_id=? AND start_ms>=? AND start_ms<?",
+          arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), endMs.toString()))
+      }
+      db.setTransactionSuccessful()
+    } finally { db.endTransaction() }
+  }
+
+  fun clearScriptBook(track: ReadAlongTrack, bookId: String) {
+    val db = database.writableDatabase
+    db.beginTransaction()
+    try {
+      val args = arrayOf(track.infoHash, track.fileIndex.toString(), bookId)
+      db.delete("readalong_timings", "info_hash=? AND file_index=? AND book_id=?", args)
+      db.delete("readalong_windows", "info_hash=? AND file_index=? AND book_id=?", args)
+      db.delete("readalong_tracks", "info_hash=? AND file_index=? AND book_id=?", args)
+      db.execSQL("DELETE FROM readalong_chapters WHERE book_id NOT IN (SELECT DISTINCT book_id FROM readalong_tracks)")
+      db.execSQL("DELETE FROM readalong_books WHERE id NOT IN (SELECT DISTINCT book_id FROM readalong_tracks)")
+      db.setTransactionSuccessful()
+    } finally { db.endTransaction() }
+  }
+
+  fun scriptChaptersForTorrent(infoHash: String): List<Pair<Int, List<TimedLine>>> {
+    val grouped = LinkedHashMap<Int, ArrayList<TimedLine>>()
+    database.readableDatabase.rawQuery(
+      "SELECT t.file_index, tm.sentence_id, tm.start_ms, tm.end_ms, tm.text " +
+        "FROM readalong_timings tm " +
+        "JOIN readalong_books b ON b.id = tm.book_id " +
+        "JOIN readalong_tracks t ON t.info_hash = tm.info_hash AND t.file_index = tm.file_index AND t.book_id = tm.book_id " +
+        "WHERE tm.info_hash = ? AND b.source = ? " +
+        "ORDER BY t.file_index ASC, tm.start_ms ASC",
+      arrayOf(infoHash, TextSyncSource.WHISPER_SCRIPT.name),
+    ).use { c ->
+      while (c.moveToNext()) {
+        val fileIndex = c.getInt(0)
+        val line = TimedLine(c.getLong(1), c.getLong(2), c.getLong(3), c.getString(4) ?: "")
+        if (line.text.isNotBlank()) grouped.getOrPut(fileIndex) { ArrayList() }.add(line)
+      }
+    }
+    return grouped.entries.map { it.key to it.value }
   }
 
   fun resetAlignment(track: ReadAlongTrack, bookId: String) {

@@ -54,11 +54,21 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
     },
     onSpeed = { showSpeedDialog = true }, onBoost = { container.playback.toggleVoiceBoost() }, modifier = modifier,
   ) { readerModifier, readerVisible ->
-    LyricsView(container.playback.readAlong, torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
-      cleanBook, onSeekToLine = { container.playback.seekToLine(it) }, modifier = readerModifier,
-      onSyncNow = { container.playback.syncReadAlongNow(it) }, searchAuthor = identity.author,
+    LyricsView(
+      repository = container.playback.readAlong,
+      audioFiles = torrents.firstOrNull { it.infoHash == state.infoHash }?.audioFiles ?: emptyList(),
+      cleanBookTitle = cleanBook,
+      onSeekToLine = { container.playback.seekToLine(it) },
+      modifier = readerModifier,
+      onSyncNow = { container.playback.syncReadAlongNow(it) },
+      searchAuthor = identity.author,
       bookIdentityReady = file != null,
-      bookIdentityTrack = state.infoHash?.let { com.example.rivulet.data.lyrics.ReadAlongTrack(it, state.fileIndex) }, isVisible = readerVisible)
+      bookIdentityTrack = state.infoHash?.let { com.example.rivulet.data.lyrics.ReadAlongTrack(it, state.fileIndex) },
+      isVisible = readerVisible,
+      trackTitle = file?.displayTitle ?: state.title,
+      trackTitlesByIndex = queueTracks.associate { it.fileIndex to it.title },
+      onPrepareAudioForScript = { container.playback.prepareCurrentTrackPaused() },
+    )
   }
   if (showSpeedDialog) AlertDialog(
     onDismissRequest = { showSpeedDialog = false }, title = { Text("Playback speed") },

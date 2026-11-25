@@ -74,6 +74,9 @@ class ReaderPreferences(context: Context) {
   private val syncModeState = MutableStateFlow(SyncMode.fromPersisted(preferences.getString("sync_mode", null)))
   val syncMode = syncModeState.asStateFlow()
 
+  private val autoGenerateScriptState = MutableStateFlow(preferences.getBoolean("auto_generate_script", false))
+  val autoGenerateScript = autoGenerateScriptState.asStateFlow()
+
   fun setTextSize(value: Int) {
     val next = normalize(value)
     size.value = next
@@ -103,6 +106,11 @@ class ReaderPreferences(context: Context) {
   fun setSyncMode(mode: SyncMode) {
     syncModeState.value = mode
     preferences.edit { putString("sync_mode", mode.name) }
+  }
+
+  fun setAutoGenerateScript(enabled: Boolean) {
+    autoGenerateScriptState.value = enabled
+    preferences.edit { putBoolean("auto_generate_script", enabled) }
   }
 
   private inline fun <reified T : Enum<T>> enumOrDefault(raw: String?, default: T): T =

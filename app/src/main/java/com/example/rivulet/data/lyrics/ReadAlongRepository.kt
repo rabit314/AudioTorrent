@@ -40,6 +40,7 @@ class ReadAlongRepository(
   private val speech: SpeechRecognizer = WhisperEngine(),
   private val models: SpeechModelManager = SpeechModelManager(context),
   private val library: BookCatalog = GutenbergFirstCatalog(),
+  private val skipSilentScriptWindows: Boolean = speech is WhisperEngine,
 ) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val mutable = MutableStateFlow(ReadAlongState())
@@ -82,6 +83,10 @@ class ReadAlongRepository(
   private var estimated = false
   private var chapterHint: Int? = null
   private var lastMatchedSentenceHint: Int? = null
+  private var transcribeFullTrack = false
+  private var inFlightWindowStartMs: Long? = null
+  private var inFlightWindowEndMs: Long? = null
+  private var inFlightWindowLines: List<TimedLine> = emptyList()
   private var correctionJob: Job? = null
   private var retiredAnalysis: Job? = null
   private var correctionSequence = 0L
@@ -91,9 +96,15 @@ class ReadAlongRepository(
   @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
   private val memoryCallbacks = object : ComponentCallbacks2 {
     override fun onConfigurationChanged(newConfig: Configuration) {}
-    override fun onLowMemory() { speech.release() }
+    override fun onLowMemory() {
+      speech.release()
+      if (transcribeFullTrack) setTranscribeFullTrack(false)
+    }
     override fun onTrimMemory(level: Int) {
       if (level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) speech.release()
+      if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL && transcribeFullTrack) {
+        setTranscribeFullTrack(false)
+      }
     }
   }
   init { context.applicationContext.registerComponentCallbacks(memoryCallbacks) }
@@ -107,6 +118,7 @@ class ReadAlongRepository(
     pendingDownload = null
     source = null; sentences = emptyList(); sentenceTokenCounts = IntArray(0); cachedParagraphs = emptyList()
     cachedWindows.clear(); matcher = null; timings.clear(); estimated = false
+    transcribeFullTrack = false; inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
     searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; lookup = null; recoveryAction = null
     positionMs = initialPositionMs.coerceAtLeast(0); durationMs = initialDurationMs.coerceAtLeast(0); playbackReady = false
     selectedHint = null; chapterHint = null; lastMatchedSentenceHint = null; exhaustedBase = null
@@ -120,15 +132,69 @@ class ReadAlongRepository(
     loadJob = scope.launch {
       try {
         offsetJob?.join()
-        val saved = withContext(Dispatchers.IO) {
+        var saved = withContext(Dispatchers.IO) {
           Triple(store.book(track), store.offset(track), store.chapterHint(track))
         }
         if (!current(track, version)) return@launch
+        if (saved.first == null &&
+          catalogMetadata.isScriptModeEnabled(track.infoHash) &&
+          catalogMetadata.book(track.infoHash)?.canAutoMatchText != false
+        ) {
+          val scriptBook = createScriptBook(
+            track = track,
+            title = catalogMetadata.title(track.infoHash).orEmpty(),
+            trackTitle = "Part ${track.fileIndex + 1}",
+          )
+          withContext(Dispatchers.IO) { store.attach(track, scriptBook, setOf(track.fileIndex)) }
+          if (!current(track, version)) return@launch
+          saved = Triple(scriptBook, 0L, null)
+        }
         val book = saved.first
         if (book == null) { mutable.value = ReadAlongState(track = track); return@launch }
-        val loaded = withContext(Dispatchers.Default) { ReadAlongText.sentences(book.book, book.id) }
         val existing = withContext(Dispatchers.IO) { store.timings(track, book.id) }
         val storedWindows = withContext(Dispatchers.IO) { store.windows(track, book.id) }
+        if (!current(track, version)) return@launch
+        val indices = withContext(Dispatchers.IO) { store.associatedTracks(book.id) }
+        if (!current(track, version)) return@launch
+
+        if (book.source == TextSyncSource.WHISPER_SCRIPT) {
+          val structured = withContext(Dispatchers.Default) {
+            val valid = existing.filter { it.text.isNotBlank() && it.isTimed }.sortedBy { it.startTimeMs }
+            TranscriptAssembler.applyParagraphBreaks(valid)
+          }
+          val chapterTitle = book.book.chapters.firstOrNull()?.title ?: book.book.title
+          val (loadedSentences, tokenCounts, initialParagraphs) = withContext(Dispatchers.Default) {
+            val s = structured.map { BookSentence(it.id, 1, chapterTitle, it.text, it.isParagraphStart) }
+            val counts = IntArray(s.size) { i -> ReadAlongText.tokens(s[i].text).size.coerceAtLeast(1) }
+            Triple(s, counts, readerParagraphs(structured, book.source))
+          }
+          if (!current(track, version)) return@launch
+          source = book
+          sentences = loadedSentences
+          sentenceTokenCounts = tokenCounts
+          cachedWindows = storedWindows.toMutableList()
+          matcher = null
+          chapterHint = null
+          selectedHint = null
+          timings = structured.associateByTo(LinkedHashMap()) { it.id }
+          cachedParagraphs = initialParagraphs
+          val matched = structured.size
+          val coverage = buildCoverageStats(matched, isSyncingNow = false)
+          val syncProg = coverage.trackTimedRatio.takeIf { it > 0f }
+          mutable.value = ReadAlongState(
+            track = track, bookId = book.id, title = book.book.title, isbn = null,
+            chapters = book.book.chapters, offsetMs = saved.second, phase = ReadAlongPhase.READY,
+            source = book.source, trackIndices = indices, lines = structured, paragraphs = cachedParagraphs,
+            matchedSentences = matched,
+            activeLineIndex = ReadAlongTimeline.activeIndex(structured, positionMs, saved.second, maxStickyGapMs = SCRIPT_STICKY_GAP_MS),
+            syncProgress = syncProg, syncCoverage = coverage, transcribingFullTrack = transcribeFullTrack,
+          )
+          loadJob = null
+          scheduleAnalysis()
+          return@launch
+        }
+
+        val loaded = withContext(Dispatchers.Default) { ReadAlongText.sentences(book.book, book.id) }
         if (!current(track, version)) return@launch
         val (loadedMatcher, tokenCounts, initialParagraphs) = withContext(Dispatchers.Default) {
           val counts = IntArray(loaded.size) { i -> ReadAlongText.tokens(loaded[i].text).size.coerceAtLeast(1) }
@@ -143,7 +209,6 @@ class ReadAlongRepository(
             readerParagraphs(linesForParagraphs, book.source),
           )
         }
-        val indices = withContext(Dispatchers.IO) { store.associatedTracks(book.id) }
         if (!current(track, version)) return@launch
         source = book; sentences = loaded; sentenceTokenCounts = tokenCounts
         cachedWindows = storedWindows.toMutableList(); matcher = loadedMatcher
@@ -167,8 +232,10 @@ class ReadAlongRepository(
           lines = lines, paragraphs = cachedParagraphs, matchedSentences = matched,
           activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, saved.second),
           syncProgress = syncProg, syncCoverage = coverage)
+        loadJob = null
         scheduleAnalysis()
       } catch (error: Exception) {
+        if (current(track, version)) loadJob = null
         fail(error, track, version)
         offerRecovery(track, version, "Retry loading text") { load(track, version) }
       }
@@ -211,7 +278,8 @@ class ReadAlongRepository(
     positionMs = clampedPos
     durationMs = clampedDur
     val snapshot = mutable.value
-    val nextActive = ReadAlongTimeline.activeIndex(snapshot.lines, positionMs, snapshot.offsetMs)
+    val stickyGapMs = if (snapshot.source == TextSyncSource.WHISPER_SCRIPT) SCRIPT_STICKY_GAP_MS else Long.MAX_VALUE
+    val nextActive = ReadAlongTimeline.activeIndex(snapshot.lines, positionMs, snapshot.offsetMs, stickyGapMs)
     val shouldRefreshCoverage = posMoved || prevPlaying != isPlaying ||
       (snapshot.syncCoverage?.trackDurationMs ?: 0L) != durationMs
     if (nextActive != snapshot.activeLineIndex || shouldRefreshCoverage) {
@@ -350,10 +418,116 @@ class ReadAlongRepository(
     if (search.automaticKey != null) {
       BookSearch.automaticEdition(searchResults, BookIdentity(search.title, search.author))?.let {
         downloadEdition(it, search.selectedTracks)
+        return
+      }
+      if (results.isEmpty() && outcome.accessUrl == null && outcome.complete &&
+        readerPreferences.autoGenerateScript.value && models.isInstalled() &&
+        catalogMetadata.book(search.track.infoHash)?.canAutoMatchText != false
+      ) {
+        generateScriptFromAudio(search.title.ifBlank { search.query }, search.title, search.track)
+        return
       }
     }
     if (!outcome.complete && outcome.accessUrl == null) offerRecovery(search.track, search.version, "Retry search") {
       searchBooks(search.query, force = true, title = search.title, author = search.author, provider = search.provider)
+    }
+  }
+
+  private fun createScriptBook(track: ReadAlongTrack, title: String, trackTitle: String): StoredReadAlongBook {
+    val cleanTitle = title.trim().ifBlank { trackTitle.trim() }.ifBlank { "Audio Script" }
+    val chapterTitle = trackTitle.trim().ifBlank { "Track ${track.fileIndex + 1}" }
+    return StoredReadAlongBook(
+      id = "script:${track.infoHash}:${track.fileIndex}",
+      book = EpubBook(
+        title = cleanTitle,
+        author = "Transcribed by Whisper",
+        chapters = listOf(EpubChapter(1, "script_1", "script", chapterTitle, "", 0)),
+      ),
+      fileName = "generated-script.txt",
+      source = TextSyncSource.WHISPER_SCRIPT,
+    )
+  }
+
+  fun generateScriptFromAudio(
+    title: String,
+    trackTitle: String = title,
+    expectedTrack: ReadAlongTrack? = mutable.value.track,
+  ) {
+    val track = mutable.value.track ?: return
+    if (track != expectedTrack) return
+    invalidateCorrection()
+    generation++
+    val version = generation
+    pendingDownload = null
+    loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
+    clearRecovery()
+    transcribeFullTrack = false
+    inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
+    catalogMetadata.setScriptModeEnabled(track.infoHash, true)
+    if (catalogMetadata.title(track.infoHash).isNullOrBlank() && title.isNotBlank()) {
+      catalogMetadata.save(track.infoHash, title)
+    }
+    mutable.update {
+      it.copy(
+        phase = ReadAlongPhase.LOADING,
+        searching = false,
+        accessUrl = null,
+        editions = emptyList(),
+        choosingEdition = false,
+        lookupMessage = null,
+        message = "Preparing audio script…",
+      )
+    }
+    importJob = scope.launch {
+      try {
+        val scriptBook = createScriptBook(track, title, trackTitle)
+        withContext(Dispatchers.IO) { store.attach(track, scriptBook, setOf(track.fileIndex)) }
+        if (current(track, version)) {
+          importJob = null
+          load(track, version)
+        }
+      } catch (error: Exception) {
+        if (current(track, version)) importJob = null
+        fail(error, track, version)
+      }
+    }
+  }
+
+  fun clearGeneratedScript() {
+    val track = mutable.value.track ?: return
+    val book = source ?: return
+    if (book.source != TextSyncSource.WHISPER_SCRIPT) return
+    invalidateCorrection()
+    generation++
+    val version = generation
+    loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
+    clearRecovery()
+    transcribeFullTrack = false
+    inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
+    catalogMetadata.setScriptModeEnabled(track.infoHash, false)
+    source = null; sentences = emptyList(); sentenceTokenCounts = IntArray(0); cachedParagraphs = emptyList()
+    cachedWindows.clear(); matcher = null; timings.clear(); estimated = false; exhaustedBase = null
+    scope.launch {
+      withContext(Dispatchers.IO) { store.clearScriptBook(track, book.id) }
+      if (current(track, version)) mutable.value = ReadAlongState(track = track)
+    }
+  }
+
+  fun setTranscribeFullTrack(enabled: Boolean) {
+    val currentSource = source?.source
+    if (enabled && currentSource != TextSyncSource.WHISPER_SCRIPT) return
+    transcribeFullTrack = enabled
+    exhaustedBase = null
+    mutable.update { it.copy(transcribingFullTrack = enabled) }
+    if (!enabled) {
+      if (analysisJob?.isActive == true && (!isPlaying || !visible)) {
+        analysisJob?.cancel()
+        analysisJob = null
+        analysisSequence++
+      }
+      publishCoverageOnly(isSyncingNow = analysisJob?.isActive == true)
+    } else {
+      scheduleAnalysis()
     }
   }
 
@@ -451,7 +625,10 @@ class ReadAlongRepository(
     val version = generation
     loadJob?.cancel(); importJob?.cancel(); analysisJob?.cancel(); lookupJob?.cancel(); lookupSequence++
     clearRecovery()
-    mutable.update { it.copy(phase = ReadAlongPhase.LOADING, searching = false, accessUrl = null, message = "Importing companion text…") }
+    transcribeFullTrack = false
+    inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
+    catalogMetadata.setScriptModeEnabled(track.infoHash, false)
+    mutable.update { it.copy(phase = ReadAlongPhase.LOADING, searching = false, accessUrl = null, message = "Importing companion text…", transcribingFullTrack = false) }
     importJob = scope.launch {
       try {
         withContext(Dispatchers.IO) {
@@ -467,8 +644,12 @@ class ReadAlongRepository(
           ensureActive()
           store.attach(track, StoredReadAlongBook(track.infoHash + ":" + ReadAlongText.digest(bytes), book, name, type), selectedTracks + track.fileIndex)
         }
-        if (current(track, version)) load(track, version)
+        if (current(track, version)) {
+          importJob = null
+          load(track, version)
+        }
       } catch (error: Exception) {
+        if (current(track, version)) importJob = null
         fail(error, track, version)
         if (current(track, version)) {
           if (error is java.io.IOException) offerRecovery(track, version, "Retry import") { startImport(track, selectedTracks, read) }
@@ -528,10 +709,19 @@ class ReadAlongRepository(
     val version = generation
     analysisJob?.cancel(); analysisJob = null; analysisSequence++
     val base = windowBase()
+    val windowEnd = base + 20_000L
+    val isScript = book.source == TextSyncSource.WHISPER_SCRIPT
     scope.launch {
-      withContext(Dispatchers.IO) { store.retryWindow(track, book.id, base) }
+      withContext(Dispatchers.IO) {
+        store.retryWindow(track, book.id, base, windowEnd, clearTimingsInWindow = isScript)
+      }
       if (current(track, version)) {
         cachedWindows.removeAll { base in it.first until it.last }
+        if (isScript) {
+          timings.values.removeAll { it.startTimeMs in base until windowEnd }
+          inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
+          publishLines(isSyncingNow = false)
+        }
         exhaustedBase = null; clearRecovery()
         mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }
         scheduleAnalysis()
@@ -541,10 +731,23 @@ class ReadAlongRepository(
 
   private suspend fun nextPendingWindow(track: ReadAlongTrack, bookId: String, base: Long): Long? {
     val mode = readerPreferences.syncMode.value
-    if (!isPlaying) {
+    val fullTrackScript = transcribeFullTrack && source?.source == TextSyncSource.WHISPER_SCRIPT
+    if (!isPlaying && !fullTrackScript) {
       // When paused, sync at most the current playhead window so CPU goes idle.
       val ready = if (base < durationMs) withContext(Dispatchers.IO) { store.windowReady(track, bookId, base) } else true
       return if (ready) null else base
+    }
+    if (fullTrackScript) {
+      return withContext(Dispatchers.IO) {
+        val alignedBase = base.coerceAtLeast(0L)
+        val forward = generateSequence(alignedBase) { it + 20_000L }
+          .takeWhile { it < durationMs }
+          .firstOrNull { !store.windowReady(track, bookId, it) }
+        if (forward != null) forward
+        else generateSequence(0L) { it + 20_000L }
+          .takeWhile { it < alignedBase && it < durationMs }
+          .firstOrNull { !store.windowReady(track, bookId, it) }
+      }
     }
     val horizonCount = mode.horizonWindows(base, durationMs)
     if (horizonCount <= 0) return null
@@ -562,98 +765,184 @@ class ReadAlongRepository(
   private fun scheduleAnalysis() {
     val book = source ?: return
     val track = mutable.value.track ?: return
-    if (!visible || !playbackReady || estimated || mutable.value.correction.isEditing || correctionJob?.isActive == true ||
-      book.source != TextSyncSource.NARRATION || durationMs <= 0 || loadJob?.isActive == true ||
-      importJob?.isActive == true || analysisJob?.isActive == true) return
+    val isScript = book.source == TextSyncSource.WHISPER_SCRIPT
+    val keepRunningBackground = transcribeFullTrack && isScript
+    if ((!visible && !keepRunningBackground) || !playbackReady || estimated || mutable.value.correction.isEditing ||
+      correctionJob?.isActive == true || (book.source != TextSyncSource.NARRATION && !isScript) || durationMs <= 0 ||
+      loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
     if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
-    if (exhaustedBase == windowBase() && isPlaying) return
+    if (exhaustedBase == windowBase() && isPlaying && !keepRunningBackground) return
     val version = generation
     val request = ++analysisSequence
     analysisJob = scope.launch {
       fun valid() = current(track, version) && request == analysisSequence
       try {
-        while (isActive && visible && valid()) {
+        while (isActive && (visible || (transcribeFullTrack && isScript)) && valid()) {
           val base = windowBase()
           val start = nextPendingWindow(track, book.id, base)
           if (!valid()) return@launch
           if (start == null) {
             exhaustedBase = base
+            if (transcribeFullTrack && isScript) {
+              transcribeFullTrack = false
+              mutable.update { it.copy(transcribingFullTrack = false) }
+            }
             publishCoverageOnly(isSyncingNow = false)
             break
           }
-          val ahead = start > base
-          val isImmediate = start <= base + 20_000L
+          val ahead = start != base
+          val isImmediate = !ahead || (start > base && start <= base + 20_000L)
           if (!models.isInstalled()) {
             exhaustedBase = base
+            if (transcribeFullTrack) {
+              transcribeFullTrack = false
+              mutable.update { it.copy(transcribingFullTrack = false) }
+            }
             if (!ahead && modelJob?.isActive != true) mutable.update { it.copy(phase = ReadAlongPhase.NEEDS_MODEL,
-              message = "Download the English speech model (60 MB) to match the narrator on this phone.") }
+              message = if (isScript) "Download the English speech model (60 MB) to generate a script from audio."
+                else "Download the English speech model (60 MB) to match the narrator on this phone.") }
             break
           }
           analysisStartMs = positionMs
-          mutable.update { it.copy(phase = if (ahead) ReadAlongPhase.READY else ReadAlongPhase.PREPARING,
+          mutable.update { it.copy(phase = if (ahead || (isScript && it.lines.isNotEmpty())) ReadAlongPhase.READY else ReadAlongPhase.PREPARING,
             preparingAhead = ahead, message = if (ahead) null else it.message,
             syncCoverage = buildCoverageStats(it.matchedSentences, isSyncingNow = true)) }
           val began = android.os.SystemClock.elapsedRealtime()
-          val decodeStart = (start - 5_000).coerceAtLeast(0)
-          val decodeDur = minOf(if (ahead) 26_000L else 30_000L, durationMs - decodeStart)
+          val windowEnd = minOf(start + 20_000L, durationMs)
+          val decodeStart = (start - if (isScript) 2_000L else 5_000L).coerceAtLeast(0L)
+          val decodeDur = if (isScript) {
+            (minOf(windowEnd + 2_000L, durationMs) - decodeStart).coerceIn(1L, 30_000L)
+          } else {
+            minOf(if (ahead) 26_000L else 30_000L, durationMs - decodeStart)
+          }
           val pcm = decoder.decode(track, decodeStart, decodeDur)
           val decoded = android.os.SystemClock.elapsedRealtime()
           var matchedCount = 0
 
-          suspend fun applyWords(recognized: List<SpeechWord>, publishNow: Boolean) {
-            ensureActive()
-            if (!valid()) return
-            val words = recognized.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
-            val activeMatcher = matcher
-            val hint = selectedHint ?: lastMatchedSentenceHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
-            val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
-            if (!valid()) return
-            if (matched.isNotEmpty()) {
-              val lastId = matched.last().id
-              val matchedIdx = sentences.indexOfFirst { it.id == lastId }
-              if (matchedIdx >= 0) lastMatchedSentenceHint = matchedIdx
-            }
-            val lines = matched.filter { it.id !in timings }
-            withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, minOf(start + 20_000, durationMs), lines, complete = false) }
-            if (valid()) {
-              lines.forEach { timings[it.id] = it }
-              matchedCount = maxOf(matchedCount, matched.size)
-              if (publishNow && lines.isNotEmpty()) {
-                mutable.update { it.copy(phase = ReadAlongPhase.READY, preparingAhead = true, message = null) }
-                publishLines(isSyncingNow = true)
-                Log.d("ReadAlongPerf", "usableUpdateMs=${android.os.SystemClock.elapsedRealtime()-began} added=${lines.size}")
+          if (isScript) {
+            if (skipSilentScriptWindows && TranscriptAssembler.isSilent(pcm)) {
+              withContext(Dispatchers.IO) {
+                ensureActive()
+                store.saveWindow(track, book.id, start, windowEnd, emptyList(), complete = true, persistText = true)
               }
-            }
-          }
+              if (!valid()) return@launch
+              cachedWindows += start..windowEnd
+            } else {
+              val previousTail = timings.values
+                .filter { it.endTimeMs <= start + 500L && it.startTimeMs < start }
+                .maxByOrNull { it.endTimeMs }
+              val prevToken = previousTail?.let { ReadAlongText.tokens(it.text).lastOrNull()?.let(TranscriptAssembler::normalizedToken) }
+              val prevEndMs = previousTail?.endTimeMs ?: Long.MIN_VALUE
 
-          if (!ahead) {
-            // Immediate playhead window: use progressive 12s focus-first slices for low time-to-first-highlight.
-            speech.transcribeProgressive(models.file, pcm, (positionMs - decodeStart).coerceAtLeast(0)) { partial ->
-              applyWords(partial, publishNow = true)
+              val recognized = if (!ahead) {
+                speech.transcribeProgressive(models.file, pcm, (positionMs - decodeStart).coerceAtLeast(0)) { partial ->
+                  ensureActive()
+                  if (!valid()) return@transcribeProgressive
+                  val shifted = partial.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
+                  val draft = withContext(Dispatchers.Default) {
+                    TranscriptAssembler.assembleWindow(shifted, book.id, start, windowEnd, prevToken, prevEndMs, idNamespace = "draft")
+                  }
+                  if (!valid()) return@transcribeProgressive
+                  inFlightWindowStartMs = start
+                  inFlightWindowEndMs = windowEnd
+                  inFlightWindowLines = draft
+                  if (draft.isNotEmpty()) {
+                    mutable.update { it.copy(phase = ReadAlongPhase.READY, preparingAhead = true, message = null) }
+                    publishLines(isSyncingNow = true)
+                  }
+                }
+              } else {
+                speech.transcribe(models.file, pcm)
+              }
+
+              if (!valid()) return@launch
+              val shiftedFinal = recognized.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
+              val finalLines = withContext(Dispatchers.Default) {
+                TranscriptAssembler.assembleWindow(shiftedFinal, book.id, start, windowEnd, prevToken, prevEndMs)
+              }
+              inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
+              withContext(Dispatchers.IO) {
+                ensureActive()
+                store.saveWindow(track, book.id, start, windowEnd, finalLines, complete = true, persistText = true)
+              }
+              if (!valid()) return@launch
+              timings.values.removeAll { it.startTimeMs in start until windowEnd }
+              finalLines.forEach { timings[it.id] = it }
+              matchedCount = finalLines.size
+              cachedWindows += start..windowEnd
+            }
+            Log.d("ReadAlongPerf", "scriptWindow=$start..$windowEnd decodeMs=${decoded-began} speechMs=${android.os.SystemClock.elapsedRealtime()-decoded} lines=$matchedCount ahead=$ahead")
+            mutable.update {
+              it.copy(
+                alignmentAttempted = true,
+                phase = ReadAlongPhase.READY,
+                preparingAhead = false,
+                analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
+                message = if (!ahead && matchedCount == 0 && timings.isEmpty()) "No clear speech detected yet. Keep playing or wait for the next passage." else null,
+              )
             }
           } else {
-            // Lookahead windows: single Whisper pass eliminates 1.8x redundant neural overlap.
-            val words = speech.transcribe(models.file, pcm)
-            applyWords(words, publishNow = false)
+            suspend fun applyWords(recognized: List<SpeechWord>, publishNow: Boolean) {
+              ensureActive()
+              if (!valid()) return
+              val words = recognized.map { it.copy(startMs = it.startMs + decodeStart, endMs = it.endMs + decodeStart) }
+              val activeMatcher = matcher
+              val hint = selectedHint ?: lastMatchedSentenceHint ?: mutable.value.activeLineIndex.takeIf { it >= 0 }
+              val matched = withContext(Dispatchers.Default) { activeMatcher?.align(words, hint) ?: emptyList() }
+              if (!valid()) return
+              if (matched.isNotEmpty()) {
+                val lastId = matched.last().id
+                val matchedIdx = sentences.indexOfFirst { it.id == lastId }
+                if (matchedIdx >= 0) lastMatchedSentenceHint = matchedIdx
+              }
+              val lines = matched.filter { it.id !in timings }
+              withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, windowEnd, lines, complete = false) }
+              if (valid()) {
+                lines.forEach { timings[it.id] = it }
+                matchedCount = maxOf(matchedCount, matched.size)
+                if (publishNow && lines.isNotEmpty()) {
+                  mutable.update { it.copy(phase = ReadAlongPhase.READY, preparingAhead = true, message = null) }
+                  publishLines(isSyncingNow = true)
+                  Log.d("ReadAlongPerf", "usableUpdateMs=${android.os.SystemClock.elapsedRealtime()-began} added=${lines.size}")
+                }
+              }
+            }
+
+            if (!ahead) {
+              // Immediate playhead window: use progressive 12s focus-first slices for low time-to-first-highlight.
+              speech.transcribeProgressive(models.file, pcm, (positionMs - decodeStart).coerceAtLeast(0)) { partial ->
+                applyWords(partial, publishNow = true)
+              }
+            } else {
+              // Lookahead windows: single Whisper pass eliminates 1.8x redundant neural overlap.
+              val words = speech.transcribe(models.file, pcm)
+              applyWords(words, publishNow = false)
+            }
+
+            if (!valid()) return@launch
+            withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, windowEnd, emptyList()) }
+            if (!valid()) return@launch
+            cachedWindows += start..windowEnd
+            Log.d("ReadAlongPerf", "decodeMs=${decoded-began} speechMs=${android.os.SystemClock.elapsedRealtime()-decoded} matched=$matchedCount ahead=$ahead")
+            mutable.update { it.copy(alignmentAttempted = true, phase = ReadAlongPhase.READY, preparingAhead = false,
+              analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
+              message = if (!ahead && matchedCount == 0) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           }
 
-          if (!valid()) return@launch
-          val windowEnd = minOf(start + 20_000, durationMs)
-          withContext(Dispatchers.IO) { ensureActive(); store.saveWindow(track, book.id, start, windowEnd, emptyList()) }
-          if (!valid()) return@launch
-          cachedWindows += start..windowEnd
-          Log.d("ReadAlongPerf", "decodeMs=${decoded-began} speechMs=${android.os.SystemClock.elapsedRealtime()-decoded} matched=$matchedCount ahead=$ahead")
-          mutable.update { it.copy(alignmentAttempted = true, phase = ReadAlongPhase.READY, preparingAhead = false,
-            analysisMillis = android.os.SystemClock.elapsedRealtime() - began,
-            message = if (!ahead && matchedCount == 0) "No confident text match in this passage. Check the edition or choose a chapter." else it.message.takeIf { _ -> ahead }) }
           val morePending = nextPendingWindow(track, book.id, windowBase()) != null
           publishLines(isSyncingNow = morePending)
           if (!morePending) {
             exhaustedBase = windowBase()
+            if (transcribeFullTrack && isScript) {
+              transcribeFullTrack = false
+              mutable.update { it.copy(transcribingFullTrack = false) }
+              publishCoverageOnly(isSyncingNow = false)
+            }
             break
           }
           val cooldownMs = when {
             !ahead -> 200L
+            transcribeFullTrack -> SyncMode.FULL_TRACK.lookaheadCooldownMs
             isImmediate -> 350L
             else -> readerPreferences.syncMode.value.lookaheadCooldownMs
           }
@@ -661,20 +950,37 @@ class ReadAlongRepository(
         }
       } catch (error: Exception) {
         if (error is CancellationException) throw error
+        inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
         if (valid()) {
           exhaustedBase = windowBase()
-          // A failed future passage must not hide already usable current text.
-          mutable.update { it.copy(phase = if (it.preparingAhead) ReadAlongPhase.READY else ReadAlongPhase.ERROR,
-            preparingAhead = false, message = error.message ?: "Could not prepare speech synchronization.",
-            syncCoverage = buildCoverageStats(it.matchedSentences, isSyncingNow = false)) }
-          offerRecovery(track, version, "Retry matching", ::retryCurrentPassage)
+          val waitingForBuffer = mutable.value.preparingAhead && error.message?.startsWith("Waiting for verified audio data") == true
+          if (waitingForBuffer) {
+            transcribeFullTrack = false
+            mutable.update {
+              it.copy(
+                phase = ReadAlongPhase.READY,
+                preparingAhead = false,
+                transcribingFullTrack = false,
+                syncCoverage = buildCoverageStats(it.matchedSentences, isSyncingNow = false, overrideReason = "Waiting for torrent download ahead"),
+              )
+            }
+          } else {
+            transcribeFullTrack = false
+            // A failed future passage must not hide already usable current text.
+            mutable.update { it.copy(phase = if (it.preparingAhead) ReadAlongPhase.READY else ReadAlongPhase.ERROR,
+              preparingAhead = false, transcribingFullTrack = false, message = error.message ?: "Could not prepare speech synchronization.",
+              syncCoverage = buildCoverageStats(it.matchedSentences, isSyncingNow = false)) }
+            offerRecovery(track, version, "Retry matching", ::retryCurrentPassage)
+          }
         }
       } finally {
         if (request == analysisSequence) {
           analysisStartMs = -1
+          inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
           mutable.update {
             it.copy(
               preparingAhead = false,
+              transcribingFullTrack = transcribeFullTrack,
               phase = if (it.phase == ReadAlongPhase.PREPARING) ReadAlongPhase.READY else it.phase,
               syncCoverage = if (it.bookId != null) buildCoverageStats(it.matchedSentences, isSyncingNow = false) else it.syncCoverage,
             )
@@ -692,7 +998,10 @@ class ReadAlongRepository(
   private fun saveOffset(value: Long) {
     val track = mutable.value.track ?: return
     val bookId = mutable.value.bookId ?: return
-    mutable.update { it.copy(offsetMs = value, activeLineIndex = ReadAlongTimeline.activeIndex(it.lines, positionMs, value)) }
+    mutable.update {
+      val stickyGap = if (it.isScriptSource) SCRIPT_STICKY_GAP_MS else Long.MAX_VALUE
+      it.copy(offsetMs = value, activeLineIndex = ReadAlongTimeline.activeIndex(it.lines, positionMs, value, stickyGap))
+    }
     if (estimated || mutable.value.source == TextSyncSource.EPUB_PACED) return
     val previous = offsetJob
     offsetJob = scope.launch { previous?.join(); withContext(Dispatchers.IO) { store.setOffset(track, value, bookId) } }
@@ -851,17 +1160,22 @@ class ReadAlongRepository(
           selectedHint = index; lastMatchedSentenceHint = index; chapterHint = sentences[index].chapterIndex
         }
         val value = ReadAlongTimeline.calibration(line, reference.positionMs)
-        interpolateGaps()
-        val lines = sentences.map { it.withTiming(timings[it.id]) }
+        val lines = if (target.source == TextSyncSource.WHISPER_SCRIPT) {
+          mutable.value.lines
+        } else {
+          interpolateGaps()
+          sentences.map { it.withTiming(timings[it.id]) }
+        }
         val matchedTotal = lines.count { item -> item.isTimed }
         val coverage = buildCoverageStats(matchedTotal, isSyncingNow = false)
         val syncProg = coverage.trackTimedRatio.takeIf { it > 0f }
           ?: if (sentences.isNotEmpty() && matchedTotal > 0) (matchedTotal.toFloat() / sentences.size).coerceIn(0f, 1f) else null
         val recoveredMatching = mutable.value.recoveryLabel in setOf("Retry matching", "Retry model download")
         if (recoveredMatching) recoveryAction = null
+        val stickyGap = if (target.source == TextSyncSource.WHISPER_SCRIPT) SCRIPT_STICKY_GAP_MS else Long.MAX_VALUE
         // Playback may have advanced during matching; align this historical reference without seeking.
         mutable.update { it.copy(offsetMs = value, lines = lines, paragraphs = cachedParagraphs, matchedSentences = matchedTotal,
-          activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, value), message = null,
+          activeLineIndex = ReadAlongTimeline.activeIndex(lines, positionMs, value, stickyGap), message = null,
           phase = if (recoveredMatching) ReadAlongPhase.READY else it.phase,
           recovery = if (recoveredMatching) null else it.recovery, recoveryLabel = if (recoveredMatching) null else it.recoveryLabel,
           correction = SyncCorrectionState(SyncCorrectionPhase.APPLIED, target, "Text aligned.", event = request), canUndoCorrection = true,
@@ -986,10 +1300,15 @@ class ReadAlongRepository(
     }
   }
 
-  private fun buildCoverageStats(matched: Int, isSyncingNow: Boolean): SyncCoverageStats {
-    val reason = when {
+  private fun buildCoverageStats(
+    matched: Int,
+    isSyncingNow: Boolean,
+    overrideReason: String? = null,
+  ): SyncCoverageStats {
+    val reason = overrideReason ?: when {
       isSyncingNow -> null
-      !isPlaying -> "Paused"
+      !isPlaying && !transcribeFullTrack -> "Paused"
+      transcribeFullTrack -> null
       readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s)"
       readerPreferences.syncMode.value == SyncMode.BALANCED -> "Buffered ahead (+3m limit)"
       readerPreferences.syncMode.value == SyncMode.EXTENDED -> "Buffered ahead (+15m limit)"
@@ -1020,6 +1339,38 @@ class ReadAlongRepository(
   }
 
   private fun publishLines(isSyncingNow: Boolean) {
+    val book = source
+    if (book?.source == TextSyncSource.WHISPER_SCRIPT) {
+      val draftStart = inFlightWindowStartMs
+      val draftEnd = inFlightWindowEndMs
+      val persisted = if (draftStart != null && draftEnd != null) {
+        timings.values.filter { it.startTimeMs !in draftStart until draftEnd }
+      } else {
+        timings.values.toList()
+      }
+      val merged = (persisted + inFlightWindowLines)
+        .filter { it.text.isNotBlank() && it.isTimed }
+        .sortedBy { it.startTimeMs }
+      val structured = TranscriptAssembler.applyParagraphBreaks(merged)
+      val chapterTitle = book.book.chapters.firstOrNull()?.title ?: book.book.title
+      sentences = structured.map { BookSentence(it.id, 1, chapterTitle, it.text, it.isParagraphStart) }
+      sentenceTokenCounts = IntArray(sentences.size) { i -> ReadAlongText.tokens(sentences[i].text).size.coerceAtLeast(1) }
+      cachedParagraphs = readerParagraphs(structured, book.source)
+      val matched = structured.size
+      val coverage = buildCoverageStats(matched, isSyncingNow)
+      val syncProg = coverage.trackTimedRatio.takeIf { it > 0f }
+      mutable.update {
+        it.copy(
+          lines = structured,
+          paragraphs = cachedParagraphs,
+          matchedSentences = matched,
+          activeLineIndex = ReadAlongTimeline.activeIndex(structured, positionMs, it.offsetMs, SCRIPT_STICKY_GAP_MS),
+          syncProgress = syncProg,
+          syncCoverage = coverage,
+        )
+      }
+      return
+    }
     interpolateGaps()
     val lines = sentences.map { it.withTiming(timings[it.id]) }
     val matched = lines.count { line -> line.isTimed }
@@ -1035,6 +1386,28 @@ class ReadAlongRepository(
       syncCoverage = coverage,
     ) }
   }
+
+  suspend fun hasMultiChapterScripts(): Boolean {
+    val hash = mutable.value.track?.infoHash ?: return false
+    return withContext(Dispatchers.IO) { store.scriptChaptersForTorrent(hash).size > 1 }
+  }
+
+  suspend fun buildExportText(bookTitle: String, trackTitles: Map<Int, String>, fullBook: Boolean): String {
+    val snapshot = mutable.value
+    val hash = snapshot.track?.infoHash ?: return ""
+    return if (fullBook) {
+      val chapters = withContext(Dispatchers.IO) { store.scriptChaptersForTorrent(hash) }
+      ScriptExporter.toBookPlainText(
+        bookTitle,
+        chapters.map { (idx, lines) -> (trackTitles[idx] ?: "Chapter ${idx + 1}") to lines },
+      )
+    } else {
+      ScriptExporter.toPlainText(bookTitle.ifBlank { snapshot.title.orEmpty() }, snapshot.lines)
+    }
+  }
+
+  fun buildExportSrt(): String = ScriptExporter.toSrt(mutable.value.lines)
+
   private fun current(track: ReadAlongTrack, version: Long) = mutable.value.track == track && generation == version
   private fun fail(error: Exception, track: ReadAlongTrack, version: Long) {
     if (error is CancellationException) throw error
@@ -1048,5 +1421,6 @@ class ReadAlongRepository(
 
   private companion object {
     val WHITESPACE_COLLAPSE_REGEX = Regex("\\s+")
+    const val SCRIPT_STICKY_GAP_MS = 6_000L
   }
 }

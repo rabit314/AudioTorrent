@@ -67,7 +67,9 @@ data class ReadAlongState(
   val preparingAhead: Boolean = false,
   val syncProgress: Float? = null,
   val syncCoverage: SyncCoverageStats? = null,
+  val transcribingFullTrack: Boolean = false,
 ) {
+  val isScriptSource: Boolean get() = source == TextSyncSource.WHISPER_SCRIPT
   val canEstimate: Boolean get() = bookId != null && source == TextSyncSource.NARRATION && matchedSentences == 0 &&
     (phase == ReadAlongPhase.NEEDS_MODEL ||
       (phase == ReadAlongPhase.ERROR && recoveryLabel in setOf("Retry matching", "Retry model download")) ||
@@ -180,7 +182,12 @@ object ReadAlongTimeline {
     )
   }
 
-  fun activeIndex(lines: List<TimedLine>, positionMs: Long, offsetMs: Long): Int {
+  fun activeIndex(
+    lines: List<TimedLine>,
+    positionMs: Long,
+    offsetMs: Long,
+    maxStickyGapMs: Long = Long.MAX_VALUE,
+  ): Int {
     if (lines.isEmpty()) return -1
     val targetMs = positionMs - offsetMs
     if (targetMs < 0) return -1
@@ -234,7 +241,12 @@ object ReadAlongTimeline {
         }
       }
       if (nextTimedStart != Long.MAX_VALUE) {
-        if (targetMs < nextTimedStart) {
+        val stickyUntil = if (maxStickyGapMs != Long.MAX_VALUE && nextTimedStart - line.endTimeMs > maxStickyGapMs) {
+          minOf(nextTimedStart, line.endTimeMs + 3_000L)
+        } else {
+          nextTimedStart
+        }
+        if (targetMs < stickyUntil) {
           return candidate
         }
       } else {

@@ -59,6 +59,9 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -73,6 +76,9 @@ fun LyricsView(
   bookIdentityReady: Boolean = true,
   bookIdentityTrack: ReadAlongTrack? = null,
   isVisible: Boolean = true,
+  trackTitle: String = "",
+  trackTitlesByIndex: Map<Int, String> = emptyMap(),
+  onPrepareAudioForScript: () -> Unit = {},
 ) {
   val state by repository.state.collectAsStateWithLifecycle()
   val textSize by repository.readerPreferences.textSize.collectAsStateWithLifecycle()
@@ -81,6 +87,9 @@ fun LyricsView(
   val spacingPref by repository.readerPreferences.lineSpacing.collectAsStateWithLifecycle()
   val keepScreenOn by repository.readerPreferences.keepScreenOn.collectAsStateWithLifecycle()
   val syncMode by repository.readerPreferences.syncMode.collectAsStateWithLifecycle()
+  val autoGenerateScript by repository.readerPreferences.autoGenerateScript.collectAsStateWithLifecycle()
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
 
   val palette = readerPaletteFor(readerTheme, MaterialTheme.colorScheme)
   val composeFont = if (fontPref == ReaderFontFamily.SERIF) FontFamily.Serif else FontFamily.SansSerif
@@ -118,6 +127,10 @@ fun LyricsView(
   var showSyncSheet by rememberSaveable { mutableStateOf(false) }
   var showBookNav by rememberSaveable { mutableStateOf(false) }
   var showAccess by remember(state.track) { mutableStateOf(false) }
+  var showReplaceScriptConfirm by remember(state.track) { mutableStateOf(false) }
+  var exportFullBookMode by remember { mutableStateOf(false) }
+  var hasMultiChapterScripts by remember { mutableStateOf(false) }
+  var exportFeedback by remember(state.track) { mutableStateOf<String?>(null) }
   var scrollTargetSentenceId by remember { mutableStateOf<Long?>(null) }
   var scrollTargetNonce by remember { mutableLongStateOf(0L) }
   var selectedTracks by remember(state.track, audioFiles) {
@@ -131,6 +144,32 @@ fun LyricsView(
       else repository.reportImportError("The audio track changed while the picker was open. Select the file again for the current book.")
     }
   }
+  val exportTxtLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+    if (uri != null) {
+      scope.launch {
+        val text = repository.buildExportText(cleanBookTitle, trackTitlesByIndex, exportFullBookMode)
+        val ok = withContext(Dispatchers.IO) {
+          runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) } ?: error("Cannot write file")
+          }.isSuccess
+        }
+        exportFeedback = if (ok) "Script saved as .txt" else "Could not save the script file."
+      }
+    }
+  }
+  val exportSrtLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-subrip")) { uri ->
+    if (uri != null) {
+      scope.launch {
+        val srt = repository.buildExportSrt()
+        val ok = withContext(Dispatchers.IO) {
+          runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(srt.toByteArray(Charsets.UTF_8)) } ?: error("Cannot write file")
+          }.isSuccess
+        }
+        exportFeedback = if (ok) "Timestamps saved as .srt" else "Could not save the .srt file."
+      }
+    }
+  }
   val importFile = {
     pickedFor = state.track; pickedTracks = selectedTracks
     picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
@@ -138,6 +177,37 @@ fun LyricsView(
   fun search() = repository.searchBooks(query, title = if (query == suggestedQuery) cleanBookTitle else query,
     author = if (query == suggestedQuery) searchAuthor else "", provider = textProvider)
   val findText = { showSearch = true; search() }
+  val startScriptGeneration = {
+    showSearch = false
+    showAccess = false
+    exportFeedback = null
+    onPrepareAudioForScript()
+    repository.generateScriptFromAudio(
+      title = cleanBookTitle,
+      trackTitle = trackTitle,
+      expectedTrack = bookIdentityTrack ?: state.track,
+    )
+  }
+  val launchTxtExport: (Boolean) -> Unit = { fullBook ->
+    exportFullBookMode = fullBook
+    val name = ScriptExporter.suggestedFileName(
+      cleanBookTitle.ifBlank { state.title.orEmpty() },
+      if (fullBook) "Full Script" else trackTitle.takeIf { it.isNotBlank() },
+      "txt",
+    )
+    exportTxtLauncher.launch(name)
+  }
+  val launchSrtExport = {
+    val name = ScriptExporter.suggestedFileName(
+      cleanBookTitle.ifBlank { state.title.orEmpty() },
+      trackTitle.takeIf { it.isNotBlank() },
+      "srt",
+    )
+    exportSrtLauncher.launch(name)
+  }
+  LaunchedEffect(state.track, state.isScriptSource, state.lines.size) {
+    hasMultiChapterScripts = if (state.isScriptSource) repository.hasMultiChapterScripts() else false
+  }
   val beginCorrection: (Long?) -> Unit = { sentenceId ->
     if (!state.correction.isEditing) followingBeforeCorrection = following
     following = false
@@ -251,15 +321,61 @@ fun LyricsView(
                 modifier = Modifier.testTag("menu-correct-sync"),
               )
             }
-            DropdownMenuItem(text = { Text(if (state.bookId == null) "Find book text" else "Replace edition") }, onClick = { showOptions = false; findText() })
+            if (state.isScriptSource) {
+              DropdownMenuItem(
+                text = { Text(if (state.transcribingFullTrack) "Stop full transcription" else "Transcribe entire track") },
+                onClick = { showOptions = false; repository.setTranscribeFullTrack(!state.transcribingFullTrack) },
+              )
+              DropdownMenuItem(
+                text = { Text("Export script (.txt)") },
+                enabled = state.lines.any { it.text.isNotBlank() },
+                onClick = { showOptions = false; launchTxtExport(false) },
+              )
+              if (hasMultiChapterScripts) {
+                DropdownMenuItem(
+                  text = { Text("Export book script (.txt)") },
+                  onClick = { showOptions = false; launchTxtExport(true) },
+                )
+              }
+              DropdownMenuItem(
+                text = { Text("Export timestamps (.srt)") },
+                enabled = state.lines.any { it.isTimed },
+                onClick = { showOptions = false; launchSrtExport() },
+              )
+            }
+            DropdownMenuItem(
+              text = { Text(if (state.bookId == null) "Find book text" else if (state.isScriptSource) "Replace with ebook" else "Replace edition") },
+              onClick = { showOptions = false; findText() },
+            )
             DropdownMenuItem(text = { Text("Import EPUB / TXT / LRC / SRT") }, onClick = { showOptions = false; importFile() })
-            DropdownMenuItem(text = { Text("Select audio tracks") }, onClick = { showOptions = false; showTracks = true })
+            if (!state.isScriptSource) {
+              DropdownMenuItem(
+                text = { Text("Generate script from audio") },
+                onClick = {
+                  showOptions = false
+                  if (state.bookId == null) startScriptGeneration() else showReplaceScriptConfirm = true
+                },
+                modifier = Modifier.testTag("menu-generate-script"),
+              )
+              DropdownMenuItem(text = { Text("Select audio tracks") }, onClick = { showOptions = false; showTracks = true })
+            } else {
+              DropdownMenuItem(
+                text = { Text("Clear generated script") },
+                onClick = { showOptions = false; repository.clearGeneratedScript() },
+              )
+            }
           }
         }
       }
     }
     HorizontalDivider(thickness = 0.5.dp, color = palette.mutedText.copy(alpha = 0.16f))
     if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, showAhead = false, textColor = palette.mutedText)
+    exportFeedback?.let { feedback ->
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(feedback, style = MaterialTheme.typography.labelSmall, color = palette.accent, modifier = Modifier.weight(1f))
+        TextButton(onClick = { exportFeedback = null }) { Text("Dismiss") }
+      }
+    }
     if (state.correction.isEditing) {
       val correction = state.correction
       Text(correction.message ?: "Select a sentence. Press Sync now when it begins.", style = MaterialTheme.typography.bodySmall, color = palette.bodyText)
@@ -278,39 +394,73 @@ fun LyricsView(
       Text("Text aligned", style = MaterialTheme.typography.labelSmall, color = palette.mutedText, modifier = Modifier.weight(1f))
       TextButton(onClick = repository::undoSyncCorrection) { Text("Undo correction") }
     }
-    if (state.bookId == null && state.phase != ReadAlongPhase.LOADING && !state.searching) {
-      Text("Find your edition or import a book to read along.", style = MaterialTheme.typography.bodyMedium, color = palette.bodyText)
+    if (state.bookId == null && state.phase != ReadAlongPhase.LOADING) {
+      if (!state.searching) {
+        Text("Find your edition, import a book, or generate a script from English audio.", style = MaterialTheme.typography.bodyMedium, color = palette.bodyText)
+      }
       FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilledTonalButton(onClick = findText) { Text("Find book text") }
-        TextButton(onClick = importFile) { Text("Import file") }
+        if (!state.searching) {
+          FilledTonalButton(onClick = findText) { Text("Find book text") }
+          TextButton(onClick = importFile) { Text("Import file") }
+        }
+        FilledTonalButton(
+          onClick = startScriptGeneration,
+          modifier = Modifier.testTag("generate-script-button"),
+        ) { Text("Generate script") }
       }
     }
     if (!following && !state.correction.isEditing) {
       FilledTonalButton(onClick = { following = true }, modifier = Modifier.fillMaxWidth()) { Text("Follow narration") }
     }
-    key(state.track, state.bookId, state.source) {
-      FlowingReader(
-        paragraphs = paragraphs,
-        list = list,
-        textSize = textSize,
-        activeId = state.lines.getOrNull(state.activeLineIndex)?.id,
-        selectedId = state.correction.target?.sentenceId.takeIf { state.correction.isEditing },
-        following = following,
-        editing = state.correction.isEditing,
-        visible = isVisible,
-        onTap = { id ->
-          val line = state.lines.firstOrNull { it.id == id }
-          if (state.correction.isEditing) { repository.selectCorrectionSentence(id); line != null }
-          else if (line?.isTimed == true) { onSeekToLine(line); following = true; true } else false
-        },
-        onLongPress = { beginCorrection(it) },
-        modifier = Modifier.fillMaxWidth().weight(1f),
-        palette = palette,
-        fontFamily = composeFont,
-        lineSpacingExtraSp = spacingPref.extraSp,
-        scrollTargetSentenceId = scrollTargetSentenceId,
-        scrollTargetNonce = scrollTargetNonce,
-      )
+    if (state.isScriptSource && state.lines.isEmpty() && state.phase != ReadAlongPhase.NEEDS_MODEL && state.modelProgress == null) {
+      Box(
+        modifier = Modifier.fillMaxWidth().weight(1f).testTag("script-listening-placeholder"),
+        contentAlignment = Alignment.Center,
+      ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(24.dp)) {
+          CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp, color = palette.accent)
+          Text(
+            "Listening to audio and writing script…",
+            style = MaterialTheme.typography.titleSmall,
+            color = palette.bodyText,
+          )
+          Text(
+            "First lines appear in a few seconds · Audio keeps playing",
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.mutedText,
+          )
+          if (!state.transcribingFullTrack) {
+            TextButton(onClick = { repository.setTranscribeFullTrack(true) }) {
+              Text("Transcribe entire track")
+            }
+          }
+        }
+      }
+    } else {
+      key(state.track, state.bookId, state.source) {
+        FlowingReader(
+          paragraphs = paragraphs,
+          list = list,
+          textSize = textSize,
+          activeId = state.lines.getOrNull(state.activeLineIndex)?.id,
+          selectedId = state.correction.target?.sentenceId.takeIf { state.correction.isEditing },
+          following = following,
+          editing = state.correction.isEditing,
+          visible = isVisible,
+          onTap = { id ->
+            val line = state.lines.firstOrNull { it.id == id }
+            if (state.correction.isEditing) { repository.selectCorrectionSentence(id); line != null }
+            else if (line?.isTimed == true) { onSeekToLine(line); following = true; true } else false
+          },
+          onLongPress = { beginCorrection(it) },
+          modifier = Modifier.fillMaxWidth().weight(1f),
+          palette = palette,
+          fontFamily = composeFont,
+          lineSpacingExtraSp = spacingPref.extraSp,
+          scrollTargetSentenceId = scrollTargetSentenceId,
+          scrollTargetNonce = scrollTargetNonce,
+        )
+      }
     }
   }
 
@@ -323,6 +473,11 @@ fun LyricsView(
       }
       TextButton(onClick = { search() }) { Text("Search") }
       ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true })
+      if (state.editions.isEmpty() || state.accessUrl != null) {
+        TextButton(onClick = startScriptGeneration, modifier = Modifier.testTag("dialog-generate-script")) {
+          Text("No ebook found? Generate script from audio")
+        }
+      }
       LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
         items(state.editions, key = { it.url }) { edition ->
           BookEditionRow(edition, onSelect = { repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
@@ -354,8 +509,10 @@ fun LyricsView(
         TextButton(onClick = repository::resetSyncCorrection) { Text("Reset") }
         TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
       }
-      if (state.source == TextSyncSource.NARRATION) {
-        TextButton(onClick = { repository.retryCurrentPassage(); showAdjustment = false }) { Text("Retry current passage") }
+      if (state.source == TextSyncSource.NARRATION || state.isScriptSource) {
+        TextButton(onClick = { repository.retryCurrentPassage(); showAdjustment = false }) {
+          Text(if (state.isScriptSource) "Re-transcribe passage" else "Retry current passage")
+        }
       }
       if (state.canChooseChapter) {
         TextButton(onClick = { showAdjustment = false; showChapters = true }) { Text("Choose chapter hint") }
@@ -399,22 +556,38 @@ fun LyricsView(
     SyncCoverageDialog(
       state = state,
       syncMode = syncMode,
+      autoGenerateScript = autoGenerateScript,
       onSelectMode = repository::setSyncMode,
+      onToggleFullTrack = repository::setTranscribeFullTrack,
+      onToggleAutoScript = repository.readerPreferences::setAutoGenerateScript,
       onRetryCurrent = { repository.retryCurrentPassage(); showSyncSheet = false },
       onOpenCorrectSync = { showSyncSheet = false; beginCorrection(null) },
+      onExportTxt = { showSyncSheet = false; launchTxtExport(false) },
+      onClearScript = { showSyncSheet = false; repository.clearGeneratedScript() },
       onDismiss = { showSyncSheet = false },
+    )
+  }
+  if (showReplaceScriptConfirm && isVisible) {
+    AlertDialog(
+      onDismissRequest = { showReplaceScriptConfirm = false },
+      title = { Text("Generate audio script?") },
+      text = { Text("This replaces the current companion text on this track with a transcript generated from English audio.") },
+      confirmButton = {
+        TextButton(onClick = { showReplaceScriptConfirm = false; startScriptGeneration() }) { Text("Generate") }
+      },
+      dismissButton = {
+        TextButton(onClick = { showReplaceScriptConfirm = false }) { Text("Cancel") }
+      },
     )
   }
   if (showBookNav && isVisible) {
     BookNavigationDialog(
       state = state,
       repository = repository,
-      onJumpToChapter = { chapter ->
-        repository.firstSentenceIdForChapter(chapter.index)?.let { id ->
-          following = false
-          scrollTargetSentenceId = id
-          scrollTargetNonce++
-        }
+      onJumpToSentence = { id ->
+        following = false
+        scrollTargetSentenceId = id
+        scrollTargetNonce++
         showBookNav = false
       },
       onJumpToHit = { hit ->
@@ -444,6 +617,18 @@ private fun syncBadgeLabel(state: ReadAlongState): String? {
   return when (state.source) {
     TextSyncSource.LRC, TextSyncSource.SRT -> "✓ Transcript synced"
     TextSyncSource.EPUB_PACED -> "~ Estimated pace"
+    TextSyncSource.WHISPER_SCRIPT -> {
+      val cov = state.syncCoverage
+      when {
+        cov != null && cov.trackTimedRatio >= 0.99f -> "✓ Script ready"
+        cov != null && cov.aheadSyncedMs >= 60_000L -> "Script · +${cov.aheadSyncedMs / 60_000}m"
+        cov != null && cov.aheadSyncedMs > 0L -> "Script · +${cov.aheadSyncedMs / 1000}s"
+        cov?.isSyncingNow == true || state.preparingAhead || state.transcribingFullTrack -> "Writing script…"
+        cov != null && cov.trackDurationMs > 0L && cov.trackTimedRatio > 0f -> "Script · ${(cov.trackTimedRatio * 100).toInt()}%"
+        cov != null && cov.matchedSentences > 0 -> "Script · ${cov.matchedSentences} lines"
+        else -> "Audio script"
+      }
+    }
     else -> {
       val cov = state.syncCoverage
       if (cov != null) {
@@ -596,33 +781,47 @@ private fun ReaderAppearanceDialog(
 private fun SyncCoverageDialog(
   state: ReadAlongState,
   syncMode: SyncMode,
+  autoGenerateScript: Boolean,
   onSelectMode: (SyncMode) -> Unit,
+  onToggleFullTrack: (Boolean) -> Unit,
+  onToggleAutoScript: (Boolean) -> Unit,
   onRetryCurrent: () -> Unit,
   onOpenCorrectSync: () -> Unit,
+  onExportTxt: () -> Unit,
+  onClearScript: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val cov = state.syncCoverage
   AlertDialog(
     onDismissRequest = onDismiss,
-    title = { Text("Synchronization details") },
+    title = { Text(if (state.isScriptSource) "Generated script details" else "Synchronization details") },
     text = {
       Column(
         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
       ) {
+        if (state.isScriptSource) {
+          Text(
+            "Generated automatically from English speech (base.en). Proper nouns and rare terms may vary.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
         if (cov != null) {
           val aheadText = when {
             cov.aheadSyncedMs >= 60_000L -> "${cov.aheadSyncedMs / 60_000}m ${(cov.aheadSyncedMs % 60_000) / 1000}s ahead of playhead"
             cov.aheadSyncedMs > 0L -> "${cov.aheadSyncedMs / 1000}s ahead of playhead"
-            else -> "Waiting to sync around playhead"
+            else -> if (state.isScriptSource) "Waiting to transcribe around playhead" else "Waiting to sync around playhead"
           }
           Text(aheadText, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
           Text(
-            "Current track synced: ${(cov.trackTimedRatio * 100).toInt()}% (${cov.syncedWindowsMs.size} cached span${if (cov.syncedWindowsMs.size == 1) "" else "s"})",
+            if (state.isScriptSource) "Track transcribed: ${(cov.trackTimedRatio * 100).toInt()}% (${cov.syncedWindowsMs.size} cached span${if (cov.syncedWindowsMs.size == 1) "" else "s"})"
+            else "Current track synced: ${(cov.trackTimedRatio * 100).toInt()}% (${cov.syncedWindowsMs.size} cached span${if (cov.syncedWindowsMs.size == 1) "" else "s"})",
             style = MaterialTheme.typography.bodySmall,
           )
           Text(
-            "Book sentences timed: ${cov.matchedSentences} / ${cov.totalBookSentences}",
+            if (state.isScriptSource) "Sentences generated: ${cov.matchedSentences}"
+            else "Book sentences timed: ${cov.matchedSentences} / ${cov.totalBookSentences}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -646,7 +845,38 @@ private fun SyncCoverageDialog(
           Text("${state.matchedSentences} sentences timed · ${state.source?.displayName ?: ""}", style = MaterialTheme.typography.bodySmall)
         }
 
-        if (state.source == TextSyncSource.NARRATION) {
+        if (state.isScriptSource) {
+          HorizontalDivider()
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(Modifier.weight(1f)) {
+              Text("Transcribe entire track", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+              Text(
+                if ((cov?.trackDurationMs ?: 0L) >= 3_600_000L) "Continues even while paused with thermal cooldowns."
+                else "Runs across all downloaded audio in this track, even while paused.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Switch(checked = state.transcribingFullTrack, onCheckedChange = onToggleFullTrack)
+          }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Column(Modifier.weight(1f)) {
+              Text("Auto-generate when no book found", style = MaterialTheme.typography.bodyMedium)
+              Text("Starts script automatically if search finds no match.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = autoGenerateScript, onCheckedChange = onToggleAutoScript)
+          }
+        }
+
+        if (state.source == TextSyncSource.NARRATION || state.isScriptSource) {
           HorizontalDivider()
           Text("Background sync mode", style = MaterialTheme.typography.labelLarge)
           SyncMode.entries.forEach { mode ->
@@ -662,9 +892,15 @@ private fun SyncCoverageDialog(
               }
             }
           }
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = onRetryCurrent) { Text("Re-sync passage") }
+          FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onRetryCurrent) { Text(if (state.isScriptSource) "Re-transcribe passage" else "Re-sync passage") }
             TextButton(onClick = onOpenCorrectSync) { Text("Correct sync") }
+            if (state.isScriptSource && state.lines.any { it.text.isNotBlank() }) {
+              TextButton(onClick = onExportTxt) { Text("Export .txt") }
+            }
+            if (state.isScriptSource) {
+              TextButton(onClick = onClearScript) { Text("Clear script") }
+            }
           }
         }
       }
@@ -678,35 +914,68 @@ private fun SyncCoverageDialog(
 private fun BookNavigationDialog(
   state: ReadAlongState,
   repository: ReadAlongRepository,
-  onJumpToChapter: (EpubChapter) -> Unit,
+  onJumpToSentence: (Long) -> Unit,
   onJumpToHit: (ReaderSearchHit) -> Unit,
   onDismiss: () -> Unit,
 ) {
   var tab by remember { mutableIntStateOf(0) }
   var searchQuery by remember { mutableStateOf("") }
   val hits = remember(searchQuery, state.lines) { repository.searchInBook(searchQuery) }
+  val sections = remember(state.lines, state.isScriptSource) {
+    if (state.isScriptSource) TranscriptAssembler.buildTimeSections(state.lines) else emptyList()
+  }
   AlertDialog(
     onDismissRequest = onDismiss,
-    title = { Text("Book navigation") },
+    title = { Text(if (state.isScriptSource) "Script navigation" else "Book navigation") },
     text = {
       Column(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
         PrimaryTabRow(selectedTabIndex = tab) {
-          Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Chapters (${state.chapters.size})") })
+          Tab(
+            selected = tab == 0,
+            onClick = { tab = 0 },
+            text = { Text(if (state.isScriptSource) "Sections (${sections.size})" else "Chapters (${state.chapters.size})") },
+          )
           Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Find text") })
         }
         Spacer(Modifier.height(8.dp))
         if (tab == 0) {
-          LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(state.chapters, key = { it.index }) { chapter ->
-              OutlinedCard(onClick = { onJumpToChapter(chapter) }, modifier = Modifier.fillMaxWidth()) {
-                Row(
-                  modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically,
+          if (state.isScriptSource) {
+            if (sections.isEmpty()) {
+              Text("Script sections appear as audio is transcribed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+              LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(sections, key = { it.index }) { section ->
+                  OutlinedCard(onClick = { onJumpToSentence(section.firstSentenceId) }, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(section.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text("${section.wordCount} words", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                      }
+                      if (section.previewText.isNotBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(section.previewText, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              items(state.chapters, key = { it.index }) { chapter ->
+                OutlinedCard(
+                  onClick = { repository.firstSentenceIdForChapter(chapter.index)?.let(onJumpToSentence) },
+                  modifier = Modifier.fillMaxWidth(),
                 ) {
-                  Column(Modifier.weight(1f)) {
-                    Text(chapter.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("${chapter.wordCount} words", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                  Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Column(Modifier.weight(1f)) {
+                      Text(chapter.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                      Text("${chapter.wordCount} words", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                   }
                 }
               }

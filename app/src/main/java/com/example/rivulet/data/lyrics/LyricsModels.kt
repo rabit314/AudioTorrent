@@ -19,4 +19,5 @@ enum class TextSyncSource(val displayName: String) {
   EPUB_PACED("Estimated book timing"),
   TXT_PACED("Paced Text"),
   LOCAL_ATTACHMENT("Attached File"),
+  WHISPER_SCRIPT("Generated audio script"),
 }

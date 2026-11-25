@@ -415,39 +415,85 @@ class TorrentEngine(
     return if (isWanted) Priority.DEFAULT else Priority.IGNORE
   }
 
-  /** Analysis borrows the current lease; it never prepares a different stream or arms deadlines. */
+  /**
+   * Analysis borrows the matching active stream lease without altering piece deadlines.
+   * For fully downloaded offline files, falls back to direct read-only disk access even while paused.
+   */
   suspend fun analysisDataSource(hash: String, fileIndex: Int): android.media.MediaDataSource = withContext(Dispatchers.IO) {
-    val stream = streamLock.withLock {
+    val active = streamLock.withLock {
       val current = activeStream
-      check(current != null && !current.isClosed && current.infoHash == hash && current.fileIndex == fileIndex) {
-        "Start this audio track before preparing read-along."
-      }
-      current.retain()
-      current
+      if (current != null && !current.isClosed && current.infoHash == hash && current.fileIndex == fileIndex) {
+        current.retain()
+        current
+      } else null
     }
-    object : android.media.MediaDataSource() {
-      private val input = RandomAccessFile(stream.file, "r")
-      private var closed = false
-      @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
-        if (closed || stream.isClosed) throw java.io.IOException("Audio analysis was cancelled.")
-        if (position >= stream.fileSize) return -1
-        if (size == 0) return 0
-        val count = minOf(size.toLong(), stream.fileSize - position, 64 * 1024L).toInt()
-        try {
-          kotlinx.coroutines.runBlocking { stream.awaitRange(position, position + count - 1, 2_000) }
-          input.seek(position); input.readFully(buffer, offset, count)
-          return count
-        } catch (error: Exception) { throw java.io.IOException("Waiting for verified audio data. Playback can continue.", error) }
-      }
-      override fun getSize() = stream.fileSize
-      @Synchronized override fun close() {
-        if (!closed) {
-          closed = true
-          input.close()
-          kotlinx.coroutines.runBlocking { releaseStream(stream) }
+    if (active != null) {
+      return@withContext object : android.media.MediaDataSource() {
+        private val input = RandomAccessFile(active.file, "r")
+        private var closed = false
+        @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+          if (closed || active.isClosed) throw java.io.IOException("Audio analysis was cancelled.")
+          if (position >= active.fileSize) return -1
+          if (size == 0) return 0
+          val count = minOf(size.toLong(), active.fileSize - position, 64 * 1024L).toInt()
+          try {
+            kotlinx.coroutines.runBlocking { active.awaitRange(position, position + count - 1, 2_000) }
+            input.seek(position); input.readFully(buffer, offset, count)
+            return count
+          } catch (error: Exception) { throw java.io.IOException("Waiting for verified audio data. Playback can continue.", error) }
+        }
+        override fun getSize() = active.fileSize
+        @Synchronized override fun close() {
+          if (!closed) {
+            closed = true
+            input.close()
+            kotlinx.coroutines.runBlocking { releaseStream(active) }
+          }
         }
       }
     }
+
+    val offlineFile = synchronized(metadataLock) {
+      if (stopping || hash in removedHashes) null
+      else {
+        val handle = getLiveHandle(hash)
+        val info = handle?.let { runCatching { it.torrentFile() }.getOrNull() }
+        val storage = info?.files()
+        if (handle != null && info != null && storage != null && fileIndex in 0 until storage.numFiles()) {
+          val size = storage.fileSize(fileIndex)
+          val progress = runCatching { handle.fileProgress() }.getOrDefault(LongArray(0))
+          val candidate = File(handle.savePath(), storage.filePath(fileIndex))
+          if (size > 0L && progress.getOrElse(fileIndex) { 0L } >= size && candidate.isFile && candidate.length() >= size) {
+            candidate to size
+          } else null
+        } else null
+      }
+    }
+    if (offlineFile != null) {
+      val (file, fileSize) = offlineFile
+      return@withContext object : android.media.MediaDataSource() {
+        private val input = RandomAccessFile(file, "r")
+        private var closed = false
+        @Synchronized override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+          if (closed) throw java.io.IOException("Audio analysis was cancelled.")
+          if (position >= fileSize) return -1
+          if (size == 0) return 0
+          val count = minOf(size.toLong(), fileSize - position, 64 * 1024L).toInt()
+          input.seek(position)
+          input.readFully(buffer, offset, count)
+          return count
+        }
+        override fun getSize() = fileSize
+        @Synchronized override fun close() {
+          if (!closed) {
+            closed = true
+            input.close()
+          }
+        }
+      }
+    }
+
+    error("Start this audio track before preparing read-along.")
   }
 
   suspend fun releaseStream(stream: StreamSession) {

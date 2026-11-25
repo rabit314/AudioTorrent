@@ -580,6 +580,17 @@ class PlaybackController(
     }
   }
 
+  /** Prepares a cold-restored track without starting audible playback so audio analysis can run paused. */
+  fun prepareCurrentTrackPaused() {
+    val hash = currentInfoHash ?: return
+    val index = currentFileIndex
+    if (index < 0 || trackPreparer == null) return
+    if (player.mediaItemCount == 0 || player.playbackState == Player.STATE_IDLE) {
+      activePlaybackJob?.cancel()
+      activePlaybackJob = scope.launch { requestPlayback(hash, index, autoplay = false) }
+    }
+  }
+
   fun seekTo(positionMs: Long) {
     readAlong.playbackDiscontinuity()
     val duration = player.duration

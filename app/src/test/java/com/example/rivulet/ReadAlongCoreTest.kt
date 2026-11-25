@@ -256,6 +256,19 @@ class ReadAlongCoreTest {
     assertEquals(SyncMode.BALANCED, SyncMode.fromPersisted("UNKNOWN"))
   }
 
+  @Test fun maxStickyGapPreventsStaleHighlightAcrossUntranscribedSeekGaps() {
+    val lines = listOf(
+      TimedLine(1, 1_000, 4_000, "Opening sentence."),
+      TimedLine(2, 300_000, 304_000, "Sentence five minutes later."),
+    )
+    // Within 3s trailing window: sticky holds
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 6_500, 0, maxStickyGapMs = 6_000L))
+    // Far into untranscribed gap: highlight clears instead of sticking for 5 minutes
+    assertEquals(-1, ReadAlongTimeline.activeIndex(lines, 120_000, 0, maxStickyGapMs = 6_000L))
+    // Default unbounded sticky mode preserves existing NARRATION behavior
+    assertEquals(0, ReadAlongTimeline.activeIndex(lines, 120_000, 0))
+  }
+
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }
   private fun audio(index: Int, path: String) = AudioFile(index, path, path.substringAfterLast('/'), 100, 100, true)
 }
