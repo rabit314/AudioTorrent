@@ -55,15 +55,16 @@ class SyncCorrectionUiTest {
           onSyncNow = { r.syncNow(SyncReference(it, 8750, 11_000)) }, isVisible = visible)
       }
     } }
-    compose.onNodeWithTag("player-text").performClick()
-    compose.onNodeWithText("Correct sync").performClick()
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
+    compose.onNodeWithTag("text-settings-button").performClick()
+    compose.onNodeWithTag("menu-correct-sync").performClick()
     compose.onNodeWithText(second, substring = false).performClick()
     assertEquals(1L, r.state.value.correction.target!!.sentenceId)
     assertTrue(seeks.isEmpty()); assertEquals(0L, r.state.value.offsetMs)
     restoration.emulateSavedInstanceStateRestore()
     assertEquals(1L, r.state.value.correction.target!!.sentenceId)
-    compose.onNodeWithTag("player-cover").performClick()
-    compose.onNodeWithTag("player-text").performClick()
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeRight() }
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
     compose.onNodeWithText("Sync now").assertIsEnabled()
     screenshot("sync-selected.png")
     compose.onNodeWithText("Sync now").performClick()
@@ -73,8 +74,8 @@ class SyncCorrectionUiTest {
     assertTrue(seeks.isEmpty()); assertEquals(0, playClicks)
     compose.onNodeWithTag("readalong-lines").performTouchInput { swipeUp() }
     compose.onNodeWithText("Follow narration").assertIsDisplayed()
-    compose.onNodeWithTag("player-cover").performClick()
-    compose.onNodeWithTag("player-text").performClick()
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeRight() }
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
     compose.onNodeWithText("Follow narration").assertIsDisplayed().performClick()
     compose.onNodeWithText("Undo correction").performClick()
     assertEquals(0L, r.state.value.offsetMs)
@@ -108,8 +109,9 @@ class SyncCorrectionUiTest {
         }
       }
     }
-    compose.onNodeWithTag("player-text").performClick()
-    compose.onNodeWithText("Correct sync").performClick()
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
+    compose.onNodeWithTag("text-settings-button").performClick()
+    compose.onNodeWithTag("menu-correct-sync").performClick()
     for ((w, h, scale) in listOf(Triple(320, 640, 1f), Triple(360, 740, 1.5f), Triple(720, 360, 1.3f))) {
       compose.runOnUiThread { width = w; height = h; font = scale }
       compose.onNodeWithText("Sync now").assertIsDisplayed()

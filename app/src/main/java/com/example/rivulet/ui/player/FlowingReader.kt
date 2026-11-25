@@ -113,7 +113,7 @@ internal fun FlowingReader(
     list.scrollToItem(index, offset)
   }
   LazyColumn(state = list, modifier = modifier.onSizeChanged { viewportWidth = it.width }.testTag("readalong-lines"),
-    contentPadding = PaddingValues(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     items(paragraphs, key = { it.key }) { paragraph ->
       ReaderParagraphText(paragraph, textSize, activeId, selectedId, editing, palette, fontFamily, lineSpacingExtraSp, onTap, onLongPress,
         onLayout = { layouts[paragraph.key] = it })

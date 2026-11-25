@@ -104,12 +104,12 @@ class FlowingReaderUiTest {
       compose.onNodeWithTag("reader-visible").assertExists().assertIsNotDisplayed()
       assertEquals(0, searches.get())
       compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
-      compose.onNodeWithTag("player-text").assertIsSelected()
+      compose.onNodeWithTag("reader-visible").assertIsDisplayed()
       compose.waitUntil(10_000) { searches.get() == 1 && !r.state.value.searching }
       compose.onNodeWithTag("player-pager").performTouchInput { swipeRight() }
-      compose.onNodeWithTag("player-cover").assertIsSelected()
-      compose.onNodeWithTag("player-text").performClick()
-      compose.onNodeWithTag("player-text").assertIsSelected()
+      compose.onNodeWithTag("reader-visible").assertIsNotDisplayed()
+      compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
+      compose.onNodeWithTag("reader-visible").assertIsDisplayed()
       assertEquals(1, searches.get()); assertEquals(0, seeks.get())
     } finally { compose.runOnUiThread { r.close() }; db.close(); compose.activity.deleteDatabase(dbName) }
   }
@@ -126,7 +126,7 @@ class FlowingReaderUiTest {
           .consumeWindowInsets(WindowInsets.safeDrawing)) { seeks.incrementAndGet() } }
       }
     }
-    compose.onNodeWithTag("player-text").performClick()
+    compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
     val target = r.state.value.lines[60]
     compose.runOnUiThread { r.playback(target.startTimeMs + 1, 200_000, prepared = false) }
     compose.waitForIdle()
@@ -150,7 +150,7 @@ class FlowingReaderUiTest {
     }
     val character = firstVisibleCharacter()
     compose.runOnUiThread { landscape = true }
-    compose.onNodeWithTag("player-text").assertIsSelected()
+    compose.onNodeWithTag("readalong-lines").assertIsDisplayed()
     File(compose.activity.cacheDir, "plan017-reader-landscape.png").outputStream().use {
       compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
     }

@@ -89,15 +89,15 @@ class IntegratedPlayerUiTest {
       compose.waitUntil(10_000) { repository.state.value.bookId != null }
       compose.runOnUiThread { repository.playback(20_100, 80_000) }
       restoration.setContent { MaterialTheme { player(playback) { modifier, visible -> LyricsView(repository, emptyList(), "Fixture", { repository.playback(it.startTimeMs, 80_000) }, modifier, isVisible = visible) } } }
-      compose.onNodeWithTag("player-text").performClick()
+      compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
       compose.onNodeWithText("Public fixture sentence 20.").assertIsDisplayed()
       val controls = compose.onNodeWithTag("player-seek").fetchSemanticsNode().boundsInRoot
       compose.onNodeWithTag("readalong-lines").performTouchInput { swipeUp() }
       compose.onNodeWithText("Follow narration").assertIsDisplayed()
       val before = compose.onNodeWithTag("readalong-lines").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()
-      compose.onNodeWithTag("player-cover").performClick()
+      compose.onNodeWithTag("player-pager").performTouchInput { swipeRight() }
       compose.onNodeWithTag("readalong-lines").assertIsNotDisplayed()
-      compose.onNodeWithTag("player-text").performClick()
+      compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
       compose.onNodeWithText("Follow narration").assertIsDisplayed()
       val after = compose.onNodeWithTag("readalong-lines").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.VerticalScrollAxisRange].value()
       assertEquals(before, after, 1f)

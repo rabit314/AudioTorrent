@@ -46,7 +46,7 @@ class ReaderPreferencesUiTest {
       val layouts = mutableListOf<TextLayoutResult>()
       compose.onNodeWithText("Public sentence number 20.").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
       assertEquals(18.sp, layouts.single().layoutInput.style.fontSize)
-      compose.onNodeWithText("Text options").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()
+      compose.onNodeWithTag("text-settings-button").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()
       compose.onNodeWithTag("reader-text-size").assertTextEquals("18 sp")
       compose.onNodeWithTag("reader-text-size-slider").performSemanticsAction(SemanticsActions.SetProgress) { it(22f) }
       compose.onNodeWithTag("reader-text-size").assertTextEquals("22 sp")
@@ -61,7 +61,7 @@ class ReaderPreferencesUiTest {
       assertEquals(22.sp, layouts.single().layoutInput.style.fontSize)
       assertEquals(1.3f, layouts.single().layoutInput.density.fontScale)
       assertEquals(20, r.state.value.activeLineIndex)
-      compose.onNodeWithText("Text options").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()
+      compose.onNodeWithTag("text-settings-button").performClick(); compose.onNodeWithText("Text size", useUnmergedTree = true).performClick()
       compose.onNodeWithText("Reset").performClick(); compose.onNodeWithTag("reader-text-size").assertTextEquals("18 sp")
     } finally { compose.runOnUiThread { r.readerPreferences.setTextSize(previous); r.close() }; db.close(); activity.deleteDatabase(name) }
   }
@@ -133,6 +133,13 @@ class ReaderPreferencesUiTest {
       compose.onNodeWithText(SyncMode.PLAYHEAD_ONLY.label).performScrollTo().performClick()
       compose.onNodeWithText("Done").performClick()
       assertEquals(SyncMode.PLAYHEAD_ONLY, ReaderPreferences(activity).syncMode.value)
+
+      compose.onNodeWithTag("text-settings-button").performClick()
+      compose.onNodeWithTag("menu-correct-sync").performClick()
+      compose.onNodeWithText("Fine-tune & tools").performClick()
+      compose.onNodeWithText("Correct sync & timing tools").assertIsDisplayed()
+      compose.onNodeWithText("Done").performClick()
+      compose.onNodeWithText("Cancel").performClick()
     } finally {
       compose.runOnUiThread {
         prefs.setReaderTheme(prevTheme)

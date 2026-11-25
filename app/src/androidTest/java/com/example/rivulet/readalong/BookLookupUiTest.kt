@@ -35,7 +35,7 @@ class BookLookupUiTest {
         PlayerLayout(PlaybackUi(infoHash = "buffer", fileIndex = 2, hasMedia = true, isBuffering = true), title, "", null,
           {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) { modifier, visible -> LyricsView(repo, emptyList(), title, {}, modifier, isVisible = visible) }
       } }
-      compose.onNodeWithTag("player-text").performClick()
+      compose.onNodeWithTag("player-pager").performTouchInput { swipeLeft() }
       compose.onNodeWithText("Buffering audio…").assertIsDisplayed()
       compose.onNodeWithText("Find book text").performClick()
       compose.waitUntil(5000) { observedQuery.get() == "Simon Kurt Unsworth" }

@@ -30,6 +30,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -53,7 +55,10 @@ import com.example.rivulet.theme.ReaderPalette
 import com.example.rivulet.theme.ReaderThemePreset
 import com.example.rivulet.theme.readerPaletteFor
 import com.example.rivulet.ui.formatDuration
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -157,82 +162,103 @@ fun LyricsView(
   }
 
   Column(modifier.fillMaxSize().background(palette.background).padding(horizontal = 12.dp, vertical = 4.dp)) {
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, itemVerticalAlignment = Alignment.CenterVertically) {
-      if (state.correction.isEditing) {
-        Text("Correct sync", style = MaterialTheme.typography.labelLarge, color = palette.activeText)
-      }
-      if (state.bookId != null && !state.correction.isEditing) {
-        TextButton(onClick = { beginCorrection(null) }, modifier = Modifier.testTag("correct-sync")) {
-          Text("Correct sync", color = palette.accent)
-        }
-      }
-      syncBadgeLabel(state)?.let { label ->
-        Surface(
-          shape = RoundedCornerShape(12.dp),
-          color = palette.chipContainer,
-          modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .clickable { showSyncSheet = true }
-            .testTag("sync-status-pill"),
-        ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+    Row(
+      modifier = Modifier.fillMaxWidth().heightIn(min = 34.dp).padding(top = 2.dp, bottom = 4.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Row(
+        modifier = Modifier.weight(1f),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        if (state.correction.isEditing) {
+          Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = palette.activeHighlightFill,
           ) {
-            if (state.syncCoverage?.isSyncingNow == true || state.preparingAhead) {
-              CircularProgressIndicator(
-                modifier = Modifier.size(10.dp),
-                strokeWidth = 1.5.dp,
-                color = palette.accent,
-              )
-            }
             Text(
-              text = label,
+              "Correct sync",
               style = MaterialTheme.typography.labelSmall,
-              color = palette.mutedText,
+              fontWeight = FontWeight.SemiBold,
+              color = palette.activeText,
+              maxLines = 1,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
             )
           }
-        }
-      }
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        if (state.bookId != null) {
-          IconButton(onClick = { showBookNav = true }, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.Search, contentDescription = "Search or jump chapters", tint = palette.accent, modifier = Modifier.size(18.dp))
+        } else {
+          syncBadgeLabel(state)?.let { label ->
+            Surface(
+              shape = RoundedCornerShape(10.dp),
+              color = palette.chipContainer.copy(alpha = 0.85f),
+              modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { showSyncSheet = true }
+                .testTag("sync-status-pill"),
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+              ) {
+                if (state.syncCoverage?.isSyncingNow == true || state.preparingAhead || state.phase == ReadAlongPhase.PREPARING) {
+                  CircularProgressIndicator(
+                    modifier = Modifier.size(10.dp).semantics { contentDescription = "Preparing the next passage" },
+                    strokeWidth = 1.5.dp,
+                    color = palette.accent,
+                  )
+                }
+                Text(
+                  text = label,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = palette.mutedText,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+              }
+            }
           }
         }
-        IconButton(onClick = { showThemeSheet = true }, modifier = Modifier.size(36.dp)) {
-          Icon(Icons.Default.Palette, contentDescription = "Reading theme and style", tint = palette.accent, modifier = Modifier.size(18.dp))
+      }
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        if (state.bookId != null) {
+          IconButton(onClick = { showBookNav = true }, modifier = Modifier.size(34.dp)) {
+            Icon(Icons.Default.Search, contentDescription = "Search or jump chapters", tint = palette.mutedText, modifier = Modifier.size(18.dp))
+          }
+        }
+        IconButton(onClick = { showThemeSheet = true }, modifier = Modifier.size(34.dp)) {
+          Icon(Icons.Default.Palette, contentDescription = "Reading theme and style", tint = palette.mutedText, modifier = Modifier.size(18.dp))
         }
         Box {
-          TextButton(onClick = { showOptions = true }) {
-            if ((state.preparingAhead || state.phase == ReadAlongPhase.PREPARING) && state.lines.isNotEmpty()) {
-              CircularProgressIndicator(
-                Modifier.size(12.dp).semantics { contentDescription = "Preparing the next passage" },
-                strokeWidth = 1.5.dp,
-                color = palette.accent,
-              )
-              Spacer(Modifier.width(6.dp))
-            }
-            Text("Text options", color = palette.accent)
+          IconButton(
+            onClick = { showOptions = true },
+            modifier = Modifier
+              .size(34.dp)
+              .testTag("text-settings-button")
+              .semantics { contentDescription = "Text and sync settings" },
+          ) {
+            TextSettingsGlyph(tint = palette.accent)
           }
           DropdownMenu(showOptions, onDismissRequest = { showOptions = false }) {
             DropdownMenuItem(text = { Text("Text size") }, onClick = { showOptions = false; showTextSize = true })
-            DropdownMenuItem(text = { Text("Reader theme & style") }, onClick = { showOptions = false; showThemeSheet = true })
-            if (state.bookId != null) DropdownMenuItem(text = { Text("Search book & chapters") }, onClick = { showOptions = false; showBookNav = true })
-            if (state.bookId != null) DropdownMenuItem(text = { Text("Sync details & mode") }, onClick = { showOptions = false; showSyncSheet = true })
+            if (state.bookId != null) {
+              DropdownMenuItem(
+                text = { Text("Correct sync") },
+                onClick = { showOptions = false; beginCorrection(null) },
+                modifier = Modifier.testTag("menu-correct-sync"),
+              )
+            }
             DropdownMenuItem(text = { Text(if (state.bookId == null) "Find book text" else "Replace edition") }, onClick = { showOptions = false; findText() })
             DropdownMenuItem(text = { Text("Import EPUB / TXT / LRC / SRT") }, onClick = { showOptions = false; importFile() })
             DropdownMenuItem(text = { Text("Select audio tracks") }, onClick = { showOptions = false; showTracks = true })
-            if (state.canChooseChapter) DropdownMenuItem(text = { Text("Choose chapter hint") }, onClick = { showOptions = false; showChapters = true })
-            if (state.bookId != null) DropdownMenuItem(text = { Text("Synchronization adjustment") }, onClick = { showOptions = false; showAdjustment = true })
-            if (state.canEstimate) DropdownMenuItem(text = { Text("Use estimated timing…") }, onClick = { showOptions = false; showAdjustment = true })
-            if (state.source == TextSyncSource.EPUB_PACED) DropdownMenuItem(text = { Text("Return to narration matching") }, onClick = { showOptions = false; repository.useNarrationTiming() })
-            if (state.source == TextSyncSource.NARRATION) DropdownMenuItem(text = { Text("Retry current passage") }, onClick = { showOptions = false; repository.retryCurrentPassage() })
           }
         }
       }
     }
+    HorizontalDivider(thickness = 0.5.dp, color = palette.mutedText.copy(alpha = 0.16f))
     if (!showSearch) ReadAlongStatus(state, repository::retry, importFile, repository::downloadModel, { showAccess = true }, showAhead = false, textColor = palette.mutedText)
     if (state.correction.isEditing) {
       val correction = state.correction
@@ -245,6 +271,7 @@ fun LyricsView(
         else FilledTonalButton(onClick = { correction.target?.let(onSyncNow) },
           enabled = correction.target != null && correction.phase != SyncCorrectionPhase.MATCHING, modifier = Modifier.testTag("sync-now")) { Text("Sync now") }
         if (correction.canRetry) TextButton(onClick = repository::retryCorrection) { Text("Retry matching") }
+        if (state.bookId != null) TextButton(onClick = { showAdjustment = true }) { Text("Fine-tune & tools") }
         TextButton(onClick = { repository.cancelCorrection(); following = followingBeforeCorrection }) { Text("Cancel") }
       }
     } else if (state.canUndoCorrection) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -319,14 +346,21 @@ fun LyricsView(
     } } }, confirmButton = { TextButton(onClick = { showChapters = false }) { Text("Close") } },
   )
   if (showAdjustment && isVisible) AlertDialog(
-    onDismissRequest = { showAdjustment = false }, title = { Text("Synchronization") },
-    text = { Column {
-      Text("Correction: ${state.offsetMs / 1000.0}s")
+    onDismissRequest = { showAdjustment = false }, title = { Text("Correct sync & timing tools") },
+    text = { Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+      Text("Offset correction: ${state.offsetMs / 1000.0}s", style = MaterialTheme.typography.titleSmall)
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         TextButton(onClick = { repository.adjustOffset(-500) }) { Text("−0.5s") }
+        TextButton(onClick = repository::resetSyncCorrection) { Text("Reset") }
         TextButton(onClick = { repository.adjustOffset(500) }) { Text("+0.5s") }
       }
-      TextButton(onClick = repository::resetSyncCorrection) { Text("Reset correction") }
+      if (state.source == TextSyncSource.NARRATION) {
+        TextButton(onClick = { repository.retryCurrentPassage(); showAdjustment = false }) { Text("Retry current passage") }
+      }
+      if (state.canChooseChapter) {
+        TextButton(onClick = { showAdjustment = false; showChapters = true }) { Text("Choose chapter hint") }
+      }
+      TextButton(onClick = { showAdjustment = false; showSyncSheet = true }) { Text("Sync coverage & mode") }
       if (state.canEstimate) {
         Text("Narration matching is unavailable for this passage. Estimated timing uses reading pace and may drift. Its adjustments are temporary.", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { repository.useEstimatedTiming(); showAdjustment = false }) { Text("Use estimated timing") }
@@ -367,6 +401,7 @@ fun LyricsView(
       syncMode = syncMode,
       onSelectMode = repository::setSyncMode,
       onRetryCurrent = { repository.retryCurrentPassage(); showSyncSheet = false },
+      onOpenCorrectSync = { showSyncSheet = false; beginCorrection(null) },
       onDismiss = { showSyncSheet = false },
     )
   }
@@ -558,6 +593,7 @@ private fun SyncCoverageDialog(
   syncMode: SyncMode,
   onSelectMode: (SyncMode) -> Unit,
   onRetryCurrent: () -> Unit,
+  onOpenCorrectSync: () -> Unit,
   onDismiss: () -> Unit,
 ) {
   val cov = state.syncCoverage
@@ -621,7 +657,10 @@ private fun SyncCoverageDialog(
               }
             }
           }
-          TextButton(onClick = onRetryCurrent) { Text("Re-sync current passage") }
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = onRetryCurrent) { Text("Re-sync passage") }
+            TextButton(onClick = onOpenCorrectSync) { Text("Correct sync") }
+          }
         }
       }
     },
@@ -748,6 +787,48 @@ fun BookEditionRow(edition: BookEdition, onSelect: () -> Unit, enabled: Boolean 
         Text(listOf(edition.provider.label, edition.author, edition.language, edition.format).filter { it.isNotBlank() }.joinToString(" · "), style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
         edition.isbn?.let { Text("ISBN $it", style = MaterialTheme.typography.labelSmall) }
       }
+    }
+  }
+}
+
+/** Crisp custom typographic T + mini settings gear vector matching compact header icon weight. */
+@Composable
+private fun TextSettingsGlyph(tint: Color, modifier: Modifier = Modifier) {
+  Canvas(modifier.size(20.dp)) {
+    val stroke = 1.65.dp.toPx()
+    val fine = 1.25.dp.toPx()
+    val w = size.width
+    val h = size.height
+
+    // Serif-styled typographic 'T' in upper-left
+    val tLeft = w * 0.14f
+    val tRight = w * 0.58f
+    val tTop = h * 0.18f
+    val tCenterX = (tLeft + tRight) * 0.5f
+    val tBottom = h * 0.72f
+    drawLine(tint, Offset(tLeft, tTop), Offset(tRight, tTop), strokeWidth = stroke, cap = StrokeCap.Round)
+    drawLine(tint, Offset(tLeft, tTop), Offset(tLeft, tTop + h * 0.08f), strokeWidth = fine, cap = StrokeCap.Round)
+    drawLine(tint, Offset(tRight, tTop), Offset(tRight, tTop + h * 0.08f), strokeWidth = fine, cap = StrokeCap.Round)
+    drawLine(tint, Offset(tCenterX, tTop), Offset(tCenterX, tBottom), strokeWidth = stroke, cap = StrokeCap.Round)
+    drawLine(tint, Offset(tCenterX - w * 0.10f, tBottom), Offset(tCenterX + w * 0.10f, tBottom), strokeWidth = fine, cap = StrokeCap.Round)
+
+    // Minimalist 6-tooth gear badge in lower-right
+    val cx = w * 0.75f
+    val cy = h * 0.73f
+    val ringR = w * 0.145f
+    val toothOut = w * 0.215f
+    drawCircle(tint, radius = ringR, center = Offset(cx, cy), style = Stroke(width = fine))
+    for (i in 0 until 6) {
+      val angle = i * PI / 3.0
+      val cosA = cos(angle).toFloat()
+      val sinA = sin(angle).toFloat()
+      drawLine(
+        color = tint,
+        start = Offset(cx + cosA * ringR, cy + sinA * ringR),
+        end = Offset(cx + cosA * toothOut, cy + sinA * toothOut),
+        strokeWidth = fine,
+        cap = StrokeCap.Round,
+      )
     }
   }
 }

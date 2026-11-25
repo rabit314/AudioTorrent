@@ -1,6 +1,7 @@
 package com.example.rivulet.ui.player
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.pager.HorizontalPager
@@ -31,7 +32,6 @@ import androidx.compose.ui.unit.DpSize
 import coil.compose.AsyncImage
 import com.example.rivulet.playback.PlaybackUi
 import com.example.rivulet.ui.formatDuration
-import kotlinx.coroutines.launch
 
 enum class PlayerContentMode { COVER, TEXT }
 data class PlayerTrackKey(val hash: String?, val index: Int)
@@ -64,38 +64,56 @@ fun PlayerLayout(
 ) {
   val pager = rememberPagerState { PlayerContentMode.entries.size }
   val readerState = rememberSaveableStateHolder()
-  val scope = rememberCoroutineScope()
-  val mode = PlayerContentMode.entries[pager.currentPage]
   val readerVisible = pager.settledPage == PlayerContentMode.TEXT.ordinal && !pager.isScrollInProgress
-  val appBarHeight = 56.dp * LocalDensity.current.fontScale.coerceAtLeast(1f)
+  val appBarHeight = 48.dp * LocalDensity.current.fontScale.coerceAtLeast(1f)
   Scaffold(modifier = modifier.safeDrawingPadding(), topBar = {
     TopAppBar(title = {
       Column {
         Text("Now playing", style = MaterialTheme.typography.titleMedium)
-        chapterLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          chapterLabel?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+          Row(
+            modifier = Modifier.testTag("player-pager-dots"),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            repeat(PlayerContentMode.entries.size) { pageIndex ->
+              val active = pager.currentPage == pageIndex
+              Box(
+                Modifier
+                  .size(width = if (active) 12.dp else 4.dp, height = 4.dp)
+                  .clip(CircleShape)
+                  .background(
+                    if (active) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                  )
+              )
+            }
+          }
+        }
       }
     }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }, actions = {
       IconButton(onClick = onBookmark, enabled = state.hasMedia) { Icon(Icons.Default.BookmarkBorder, "Add bookmark") }
       IconButton(onClick = onQueue, enabled = state.hasMedia) { Icon(Icons.Default.FormatListNumbered, "Chapters and bookmarks") }
     }, expandedHeight = appBarHeight)
   }) { insets ->
-    BoxWithConstraints(Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp)) {
+    BoxWithConstraints(Modifier.fillMaxSize().padding(insets).padding(horizontal = 14.dp)) {
       val landscape = maxWidth >= 480.dp && maxWidth > maxHeight
-      val controlsMaxHeight = (maxHeight - 120.dp).coerceAtLeast(120.dp)
+      val controlsMaxHeight = (maxHeight - 108.dp).coerceAtLeast(120.dp)
       val media: @Composable (Modifier) -> Unit = { panelModifier ->
-        Column(panelModifier, horizontalAlignment = Alignment.CenterHorizontally) {
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = mode == PlayerContentMode.COVER, onClick = { scope.launch { pager.animateScrollToPage(0) } }, label = { Text("Cover") }, modifier = Modifier.testTag("player-cover"))
-            FilterChip(selected = mode == PlayerContentMode.TEXT, onClick = { scope.launch { pager.animateScrollToPage(1) } }, label = { Text("Text") }, modifier = Modifier.testTag("player-text"))
-          }
-          Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)).testTag("player-media")) {
-            HorizontalPager(state = pager, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize().testTag("player-pager")) { page ->
-              if (page == PlayerContentMode.COVER.ordinal) {
-                if (!state.coverUrl.isNullOrBlank()) AsyncImage(state.coverUrl, "Book cover", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(12.dp))
-                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.MenuBook, "No cover available", Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary) }
-              } else readerState.SaveableStateProvider("reader") {
-                textContent(Modifier.fillMaxSize().testTag("reader-visible"), readerVisible)
-              }
+        Box(
+          panelModifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .testTag("player-media")
+        ) {
+          HorizontalPager(state = pager, beyondViewportPageCount = 1, modifier = Modifier.fillMaxSize().testTag("player-pager")) { page ->
+            if (page == PlayerContentMode.COVER.ordinal) {
+              if (!state.coverUrl.isNullOrBlank()) AsyncImage(state.coverUrl, "Book cover", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(12.dp))
+              else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.MenuBook, "No cover available", Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary) }
+            } else readerState.SaveableStateProvider("reader") {
+              textContent(Modifier.fillMaxSize().testTag("reader-visible"), readerVisible)
             }
           }
         }
@@ -130,7 +148,7 @@ private fun PlayerControls(
   var drag by remember(track) { mutableStateOf<PlayerSeekGesture?>(null) }
   val duration = state.durationMs.coerceAtLeast(1)
   val fraction = drag?.fraction ?: (state.positionMs.toFloat() / duration).coerceIn(0f, 1f)
-  Column(modifier.padding(top = if (compact) 0.dp else 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+  Column(modifier.padding(top = if (compact) 0.dp else 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
     Text(title.ifBlank { "Nothing playing" }, style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
     if (subtitle.isNotBlank() && subtitle != title) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
     key(track) {
@@ -146,7 +164,7 @@ private fun PlayerControls(
       Text(formatDuration(drag?.positionFor(track, state.durationMs) ?: state.positionMs), style = MaterialTheme.typography.labelMedium)
       Text(formatDuration(state.durationMs), style = MaterialTheme.typography.labelMedium)
     }
-    Row(Modifier.fillMaxWidth().widthIn(max = 420.dp).padding(vertical = if (compact) 2.dp else 6.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().widthIn(max = 420.dp).padding(vertical = if (compact) 0.dp else 2.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
       TransportButton(Icons.Default.SkipPrevious, "Previous chapter", state.hasPrevious || state.positionMs > 3000, onPrevious)
       TransportButton(Icons.Default.Replay10, "Back 10 seconds", state.hasMedia, onBackTen, tonal = true)
       TransportButton(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.isPlaying) "Pause" else "Play",
@@ -154,15 +172,38 @@ private fun PlayerControls(
       TransportButton(Icons.Default.Forward30, "Forward 30 seconds", state.hasMedia, onForwardThirty, tonal = true)
       TransportButton(Icons.Default.SkipNext, "Next chapter", state.hasNext, onNext)
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-      TextButton(onClick = onSpeed, enabled = state.hasMedia) { Icon(Icons.Default.Speed, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Speed ${state.speed}×") }
-      TextButton(onClick = onBoost, enabled = state.hasMedia) { Icon(Icons.Default.GraphicEq, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (state.isVoiceBoost) "Boost on" else "Boost") }
+    Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      val bottomTint = if (state.hasMedia) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+      Row(
+        modifier = Modifier
+          .clip(RoundedCornerShape(10.dp))
+          .clickable(enabled = state.hasMedia, onClick = onSpeed)
+          .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(Icons.Default.Speed, null, Modifier.size(18.dp), tint = bottomTint)
+        Spacer(Modifier.width(6.dp))
+        Text("Speed ${state.speed}×", style = MaterialTheme.typography.labelLarge, color = bottomTint)
+      }
+      Row(
+        modifier = Modifier
+          .clip(RoundedCornerShape(10.dp))
+          .clickable(enabled = state.hasMedia, onClick = onBoost)
+          .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(Icons.Default.GraphicEq, null, Modifier.size(18.dp), tint = bottomTint)
+        Spacer(Modifier.width(6.dp))
+        Text(if (state.isVoiceBoost) "Boost on" else "Boost", style = MaterialTheme.typography.labelLarge, color = bottomTint)
+      }
     }
-    Box(Modifier.fillMaxWidth().height(20.dp), contentAlignment = Alignment.Center) {
-      if (state.isBuffering) {
-        Text("Buffering audio…", style = MaterialTheme.typography.labelSmall)
-      } else if (state.error != null) {
-        Text(state.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    if (state.isBuffering || state.error != null) {
+      Box(Modifier.fillMaxWidth().padding(bottom = 2.dp), contentAlignment = Alignment.Center) {
+        if (state.isBuffering) {
+          Text("Buffering audio…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else if (state.error != null) {
+          Text(state.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
       }
     }
   }
