@@ -13,13 +13,14 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +58,8 @@ class TorrentEngine(
   private val publicWebseeds: PublicWebseedBridge = PublicWebseedBridge(),
 ) : AlertListener {
 
+  private data class CachedFileMeta(val index: Int, val path: String, val name: String, val size: Long, val isAudio: Boolean)
+
   private val appContext = context.applicationContext
   private val session = SessionManager(false)
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -65,10 +68,13 @@ class TorrentEngine(
   private val catalogMetadata = BookCatalogMetadata(appContext)
 
   private val handles = ConcurrentHashMap<String, TorrentHandle>()
+  private val fileMetaCache = ConcurrentHashMap<String, List<CachedFileMeta>>()
   private val removedHashes = ConcurrentHashMap.newKeySet<String>()
   private val errors = ConcurrentHashMap<String, String>()
   private val coverCache = ConcurrentHashMap<String, String>()
   private val ready = AtomicBoolean(false)
+  private val stateDirty = AtomicBoolean(true)
+  private val refreshSignals = Channel<Unit>(Channel.CONFLATED)
   private val addLock = Mutex()
   private val streamLock = Mutex()
   // torrentFile()/files() borrow native storage. Removal and stop must wait for readers.
@@ -86,6 +92,14 @@ class TorrentEngine(
     saveDir.mkdirs()
     magnetTempDir.mkdirs()
     scope.launch { runSession() }
+    scope.launch {
+      for (signal in refreshSignals) {
+        delay(250)
+        // Drain extra coalesced notifications emitted during the debounce window.
+        while (refreshSignals.tryReceive().isSuccess) Unit
+        refresh(logStats = false)
+      }
+    }
   }
 
   private suspend fun runSession() {
@@ -114,10 +128,23 @@ class TorrentEngine(
 
       var logCounter = 0
       while (scope.isActive) {
-        val hasActivity = handles.values.any { runCatching { it.isValid && it.status().downloadRate() > 0 }.getOrDefault(false) }
-        refresh(logStats = (++logCounter % 5 == 0))
-        // Adaptive polling: 1500ms when actively downloading, 4000ms when idle to save CPU/battery on low-end devices
-        delay(if (hasActivity) 1500L else 4000L)
+        val hasActivity = handles.values.any {
+          runCatching {
+            if (!it.isValid) false
+            else {
+              val st = it.status()
+              st.downloadRate() > 0 || st.uploadRate() > 0 ||
+                st.state() == TorrentStatus.State.DOWNLOADING_METADATA ||
+                st.state() == TorrentStatus.State.CHECKING_FILES ||
+                st.state() == TorrentStatus.State.CHECKING_RESUME_DATA
+            }
+          }.getOrDefault(false)
+        }
+        if (hasActivity || stateDirty.getAndSet(false) || _torrents.value.isEmpty()) {
+          refresh(logStats = (++logCounter % 5 == 0))
+        }
+        // Adaptive polling: 1500ms when active, 10000ms idle backoff when swarm is quiet.
+        delay(if (hasActivity) 1500L else 10_000L)
       }
     } catch (cancelled: CancellationException) {
       throw cancelled
@@ -242,6 +269,8 @@ class TorrentEngine(
   private suspend fun addTorrentInfo(info: TorrentInfo): String {
     val hash = info.infoHash().toHex()
     removedHashes.remove(hash)
+    fileMetaCache.remove(hash)
+    stateDirty.set(true)
     val existing = getLiveHandle(hash)
     if (existing != null && existing.isValid) {
       configurePublicWebseed(hash, existing, info)
@@ -444,8 +473,6 @@ class TorrentEngine(
   // Offline Downloads & Management
   // ---------------------------------------------------------------------------------------------
 
-  fun getStorageUsageBytes(): Long = _torrents.value.sumOf { it.doneBytes }
-  fun getFreeDiskSpaceBytes(): Long = saveDir.freeSpace
   fun hasSufficientDiskSpace(requiredBytes: Long = 50L * 1024 * 1024): Boolean =
     saveDir.freeSpace > requiredBytes + MIN_FREE_DISK_BUFFER_BYTES
 
@@ -457,6 +484,7 @@ class TorrentEngine(
     val handle = getLiveHandle(hash) ?: return
     handle.filePriority(fileIndex, if (wanted) Priority.DEFAULT else Priority.IGNORE)
     database.saveFileWanted(hash, fileIndex, wanted)
+    stateDirty.set(true)
     refresh(logStats = true)
   }
 
@@ -476,6 +504,7 @@ class TorrentEngine(
         database.saveFileWanted(hash, i, wanted)
       }
     }
+    stateDirty.set(true)
     refresh(logStats = true)
   }
 
@@ -492,8 +521,6 @@ class TorrentEngine(
     return null
   }
 
-  suspend fun deleteTorrent(hash: String, deleteFiles: Boolean) = removeTorrent(hash, deleteFiles)
-
   suspend fun removeTorrent(hash: String, deleteFiles: Boolean) = withContext(Dispatchers.IO) {
     addLock.withLock {
       val (savePath, paths) = streamLock.withLock {
@@ -503,6 +530,7 @@ class TorrentEngine(
         }
         synchronized(metadataLock) {
           removedHashes.add(hash)
+          fileMetaCache.remove(hash)
           val handle = handles.remove(hash)
           val info = handle?.let { runCatching { it.torrentFile() }.getOrNull() }
           val savePath = handle?.let { runCatching { it.savePath() }.getOrNull() }
@@ -532,6 +560,7 @@ class TorrentEngine(
       }
 
       errors.remove(hash)
+      stateDirty.set(true)
       refresh(logStats = true)
     }
   }
@@ -539,6 +568,7 @@ class TorrentEngine(
   fun find(hash: String): TorrentUi? = _torrents.value.firstOrNull { it.infoHash == hash }
 
   fun shutdown() {
+    refreshSignals.close()
     scope.cancel()
     synchronized(metadataLock) {
       if (stopping) return
@@ -546,6 +576,7 @@ class TorrentEngine(
       activeStream?.close()
       activeStream = null
       handles.clear()
+      fileMetaCache.clear()
     }
     publicWebseeds.close()
     // stop() joins the alert thread, which also uses metadataLock.
@@ -616,29 +647,35 @@ class TorrentEngine(
   }
 
   private fun readFiles(hash: String, handle: TorrentHandle, info: TorrentInfo): List<AudioFile> {
-    val storage = info.files()
-    val count = storage.numFiles()
-    val progress = runCatching { handle.fileProgress() }.getOrDefault(LongArray(0))
-    val wantedMap = database.getFilePriorities(hash)
-    val positionsMap = database.getAllPlaybackPositions(hash)
-    val result = ArrayList<AudioFile>(count)
-
-    for (index in 0 until count) {
-      val path = storage.filePath(index)
-      result.add(
-        AudioFile(
+    val metas = fileMetaCache.getOrPut(hash) {
+      val storage = info.files()
+      val count = storage.numFiles()
+      List(count) { index ->
+        val path = storage.filePath(index)
+        CachedFileMeta(
           index = index,
           path = path,
           name = storage.fileName(index),
           size = storage.fileSize(index),
-          downloadedBytes = progress.getOrElse(index) { 0L },
           isAudio = isAudioFile(path),
-          isWanted = wantedMap[index] == true,
-          savedPositionMs = positionsMap[index] ?: 0L,
         )
+      }
+    }
+    val progress = runCatching { handle.fileProgress() }.getOrDefault(LongArray(0))
+    val wantedMap = database.getFilePriorities(hash)
+    val positionsMap = database.getAllPlaybackPositions(hash)
+    return metas.map { meta ->
+      AudioFile(
+        index = meta.index,
+        path = meta.path,
+        name = meta.name,
+        size = meta.size,
+        downloadedBytes = progress.getOrElse(meta.index) { 0L },
+        isAudio = meta.isAudio,
+        isWanted = wantedMap[meta.index] == true,
+        savedPositionMs = positionsMap[meta.index] ?: 0L,
       )
     }
-    return result
   }
 
   private fun stateLabel(state: TorrentStatus.State): String =
@@ -692,6 +729,7 @@ class TorrentEngine(
             if (handle != null && handle.isValid) {
               val hash = handle.infoHash().toHex()
               if (hash in removedHashes) return
+              fileMetaCache.remove(hash)
               val info = handle.torrentFile()
               if (info != null) {
                 database.updateTorrentName(hash, info.name())
@@ -712,7 +750,8 @@ class TorrentEngine(
       } catch (_: Throwable) {
         // Never let alert handling kill libtorrent's alert thread.
       }
-      scope.launch { refresh(logStats = false) }
+      stateDirty.set(true)
+      refreshSignals.trySend(Unit)
     }
   }
 

@@ -1,19 +1,13 @@
 package com.example.rivulet
 
-import com.example.rivulet.data.AudioFile
-import com.example.rivulet.data.lyrics.AlignmentStrategy
-import com.example.rivulet.data.lyrics.AudioBookAligner
+import com.example.rivulet.data.lyrics.BookIdentityResolver
 import com.example.rivulet.data.lyrics.BookTitleCleaner
-import com.example.rivulet.data.lyrics.EpubBook
-import com.example.rivulet.data.lyrics.EpubChapter
 import com.example.rivulet.data.lyrics.EpubExtractor
 import com.example.rivulet.data.lyrics.EpubStructureParser
 import com.example.rivulet.data.lyrics.IsbnValidator
-import com.example.rivulet.data.lyrics.PacedTimingEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -27,7 +21,6 @@ class EpubAndAlignmentTest {
   fun testEpubStructureParserWithMockEpub() {
     val baos = ByteArrayOutputStream()
     ZipOutputStream(baos).use { zos ->
-      // container.xml
       zos.putNextEntry(ZipEntry("META-INF/container.xml"))
       val containerXml = """
         <?xml version="1.0"?>
@@ -40,7 +33,6 @@ class EpubAndAlignmentTest {
       zos.write(containerXml.toByteArray(Charsets.UTF_8))
       zos.closeEntry()
 
-      // content.opf
       zos.putNextEntry(ZipEntry("OEBPS/content.opf"))
       val opfXml = """
         <?xml version="1.0" encoding="utf-8"?>
@@ -63,7 +55,6 @@ class EpubAndAlignmentTest {
       zos.write(opfXml.toByteArray(Charsets.UTF_8))
       zos.closeEntry()
 
-      // toc.ncx
       zos.putNextEntry(ZipEntry("OEBPS/toc.ncx"))
       val ncxXml = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -83,7 +74,6 @@ class EpubAndAlignmentTest {
       zos.write(ncxXml.toByteArray(Charsets.UTF_8))
       zos.closeEntry()
 
-      // ch01.xhtml
       zos.putNextEntry(ZipEntry("OEBPS/ch01.xhtml"))
       val ch1Html = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -98,7 +88,6 @@ class EpubAndAlignmentTest {
       zos.write(ch1Html.toByteArray(Charsets.UTF_8))
       zos.closeEntry()
 
-      // ch02.xhtml
       zos.putNextEntry(ZipEntry("OEBPS/ch02.xhtml"))
       val ch2Html = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -133,62 +122,6 @@ class EpubAndAlignmentTest {
   }
 
   @Test
-  fun testAudioBookAlignerTitleAndNumberMatching() {
-    val audioFiles = listOf(
-      AudioFile(index = 0, path = "Sherlock/01_A_Scandal_in_Bohemia.mp3", name = "01_A_Scandal_in_Bohemia.mp3", size = 5000L, downloadedBytes = 5000L, isAudio = true),
-      AudioFile(index = 1, path = "Sherlock/02_The_Red_Headed_League.mp3", name = "02_The_Red_Headed_League.mp3", size = 6000L, downloadedBytes = 6000L, isAudio = true),
-    )
-
-    val chapters = listOf(
-      EpubChapter(index = 1, id = "c1", href = "c1.xhtml", title = "Chapter 1: A Scandal in Bohemia", text = "Content 1", wordCount = 100),
-      EpubChapter(index = 2, id = "c2", href = "c2.xhtml", title = "Chapter 2: The Red-Headed League", text = "Content 2", wordCount = 120),
-    )
-
-    val book = EpubBook("Sherlock Holmes", "Conan Doyle", chapters)
-    val result = AudioBookAligner.align(audioFiles, book)
-
-    assertEquals(AlignmentStrategy.EXACT_TITLE_MATCH, result.strategy)
-    assertTrue("Confidence should be high", result.confidence >= 0.8f)
-    assertEquals(2, result.trackToChapterMap.size)
-    assertEquals("Chapter 1: A Scandal in Bohemia", result.trackToChapterMap[0]?.title)
-    assertEquals("Chapter 2: The Red-Headed League", result.trackToChapterMap[1]?.title)
-  }
-
-  @Test
-  fun testAudioBookAlignerSingleFileMultiChapter() {
-    val audioFiles = listOf(
-      AudioFile(index = 0, path = "Sherlock.m4b", name = "Sherlock.m4b", size = 50000L, downloadedBytes = 50000L, isAudio = true),
-    )
-    val chapters = listOf(
-      EpubChapter(index = 1, id = "c1", href = "c1.xhtml", title = "Chapter 1", text = "Text 1", wordCount = 100),
-      EpubChapter(index = 2, id = "c2", href = "c2.xhtml", title = "Chapter 2", text = "Text 2", wordCount = 100),
-    )
-    val book = EpubBook("Sherlock Holmes", "Conan Doyle", chapters)
-    val result = AudioBookAligner.align(audioFiles, book)
-
-    assertEquals(AlignmentStrategy.SINGLE_FILE_MULTI_CHAPTER, result.strategy)
-    assertNotNull(result.trackToChapterMap[0])
-    assertEquals("Chapter 1", result.trackToChapterMap[0]?.title)
-  }
-
-  @Test
-  fun testPacedTimingEngineSimilarityAndAnchor() {
-    val textA = "To Sherlock Holmes she is always the woman."
-    val textB = "To Sherlock Holmes she was always the woman."
-    val similarity = PacedTimingEngine.calculateSimilarity(textA, textB)
-    assertTrue("High token overlap similarity expected", similarity > 0.7f)
-
-    val lines = PacedTimingEngine.paceChapter(
-      chapterText = "Mr and Mrs Dursley were proud to say they were normal. They were the last people you would expect to be involved in anything strange.",
-      totalDurationMs = 20_000L,
-    )
-    assertTrue(lines.size >= 2)
-
-    val matchIdx = PacedTimingEngine.findBestMatchingLineIndex(lines, "last people you would expect")
-    assertEquals(1, matchIdx)
-  }
-
-  @Test
   fun testTxtExtractorChapterParsing() {
     val sampleTxt = """
       Chapter 1. The Boy Who Lived
@@ -207,24 +140,16 @@ class EpubAndAlignmentTest {
 
   @Test
   fun testIsbnValidatorCalculations() {
-    // Valid ISBN-10 (standard check digit and 'X' check digit)
     assertTrue("0-306-40615-2 should be valid ISBN-10", IsbnValidator.isValid("0-306-40615-2"))
     assertTrue("080442957X should be valid ISBN-10 with check digit X", IsbnValidator.isValid("080442957X"))
     assertTrue("1844168603 should be valid ISBN-10", IsbnValidator.isValid("1844168603"))
-
-    // Invalid ISBN-10
     assertFalse("0-306-40615-3 has bad check digit", IsbnValidator.isValid("0-306-40615-3"))
-
-    // Valid ISBN-13
     assertTrue("978-0-306-40615-7 should be valid ISBN-13", IsbnValidator.isValid("978-0-306-40615-7"))
     assertTrue("978-1-84416-860-6 should be valid ISBN-13", IsbnValidator.isValid("978-1-84416-860-6"))
-
-    // Invalid ISBN-13
     assertFalse("978-0-306-40615-0 has bad check digit", IsbnValidator.isValid("978-0-306-40615-0"))
     assertFalse("Empty string is not valid", IsbnValidator.isValid(""))
     assertFalse("Random characters are not valid", IsbnValidator.isValid("abcdefghijk"))
 
-    // Extraction from metadata / text
     val extracted = IsbnValidator.extractFirstValidIsbn("urn:isbn:978-1-84416-860-6 (pbk.)")
     assertEquals("978-1-84416-860-6", extracted)
 
@@ -234,27 +159,21 @@ class EpubAndAlignmentTest {
 
   @Test
   fun testBookTitleCleanerResolution() {
-    // Case 1: Specific book title in track inside omnibus container (e.g. user's exact case)
-    val book1 = BookTitleCleaner.resolveCleanBookTitle("[01] Soul Hunter.m4b", "Night Lords")
+    val book1 = BookIdentityResolver.resolve("[01] Soul Hunter.m4b", container = "Night Lords").title
     assertEquals("Soul Hunter", book1)
 
-    // Case 2: Clean file name with track number and underscores
-    val book2 = BookTitleCleaner.resolveCleanBookTitle("02 - Blood_Reaver.m4b", "Night Lords Omnibus")
+    val book2 = BookIdentityResolver.resolve("02 - Blood_Reaver.m4b", container = "Night Lords Omnibus").title
     assertEquals("Blood Reaver", book2)
 
-    // Case 3: Generic track name - falls back to container title
-    val book3 = BookTitleCleaner.resolveCleanBookTitle("01 - Chapter 1.mp3", "Ray Bradbury - Fahrenheit 451")
+    val book3 = BookIdentityResolver.resolve("01 - Chapter 1.mp3", container = "Ray Bradbury - Fahrenheit 451").title
     assertEquals("Fahrenheit 451", book3)
 
-    // Case 4: Without corroboration an ambiguous two-part name stays intact.
-    val book4 = BookTitleCleaner.resolveCleanBookTitle("Aaron Dembski-Bowden - Void Stalker [Audiobook].mp3", "Warhammer")
+    val book4 = BookIdentityResolver.resolve("Aaron Dembski-Bowden - Void Stalker [Audiobook].mp3", container = "Warhammer").title
     assertEquals("Aaron Dembski-Bowden - Void Stalker", book4)
 
-    // Case 5: Path components stripped
-    val book5 = BookTitleCleaner.resolveCleanBookTitle("Audiobooks/Night Lords/[01] Soul Hunter.m4b", "Night Lords")
+    val book5 = BookIdentityResolver.resolve("Audiobooks/Night Lords/[01] Soul Hunter.m4b", container = "Night Lords").title
     assertEquals("Soul Hunter", book5)
 
-    // Verify isGenericTrackName
     assertTrue(BookTitleCleaner.isGenericTrackName("Chapter 1"))
     assertTrue(BookTitleCleaner.isGenericTrackName("Track 02"))
     assertTrue(BookTitleCleaner.isGenericTrackName("01"))

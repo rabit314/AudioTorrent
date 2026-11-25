@@ -1,6 +1,7 @@
 package com.example.rivulet.data.lyrics
 
 import com.example.rivulet.data.AudioFile
+import com.example.rivulet.ui.player.ReaderParagraph
 import java.security.MessageDigest
 import java.text.BreakIterator
 import java.util.Locale
@@ -25,6 +26,17 @@ data class BookSentence(
     )
 }
 
+data class SyncCoverageStats(
+  val aheadSyncedMs: Long = 0L,
+  val syncedWindowsMs: List<LongRange> = emptyList(),
+  val trackDurationMs: Long = 0L,
+  val trackTimedRatio: Float = 0f,
+  val matchedSentences: Int = 0,
+  val totalBookSentences: Int = 0,
+  val isSyncingNow: Boolean = false,
+  val syncPausedReason: String? = null,
+)
+
 data class ReadAlongState(
   val track: ReadAlongTrack? = null,
   val phase: ReadAlongPhase = ReadAlongPhase.EMPTY,
@@ -33,6 +45,7 @@ data class ReadAlongState(
   val isbn: String? = null,
   val chapters: List<EpubChapter> = emptyList(),
   val lines: List<TimedLine> = emptyList(),
+  val paragraphs: List<ReaderParagraph> = emptyList(),
   val activeLineIndex: Int = -1,
   val offsetMs: Long = 0,
   val source: TextSyncSource? = null,
@@ -53,6 +66,7 @@ data class ReadAlongState(
   val choosingEdition: Boolean = false,
   val preparingAhead: Boolean = false,
   val syncProgress: Float? = null,
+  val syncCoverage: SyncCoverageStats? = null,
 ) {
   val canEstimate: Boolean get() = bookId != null && source == TextSyncSource.NARRATION && matchedSentences == 0 &&
     (phase == ReadAlongPhase.NEEDS_MODEL ||
@@ -73,6 +87,9 @@ data class StoredReadAlongBook(val id: String, val book: EpubBook, val fileName:
 data class SpeechWord(val text: String, val startMs: Long, val endMs: Long)
 
 object ReadAlongText {
+  private val PARAGRAPH_BREAK_REGEX = Regex("\\r?\\n[\\t \\r]*\\n+")
+  private val TOKEN_REGEX = Regex("[\\p{L}\\p{N}]+(?:['’][\\p{L}]+)?")
+
   fun digest(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes).joinToString("") { "%02x".format(it) }
 
@@ -89,7 +106,7 @@ object ReadAlongText {
       if (text.isNotBlank()) {
         val hash = digest("$identity:${chapter.index}:$start".toByteArray())
         val contentStart = start + raw.indexOfFirst { !it.isWhitespace() }
-        val paragraphStart = result.isEmpty() || Regex("\\r?\\n[\\t \\r]*\\n").containsMatchIn(chapter.text.substring(previousTextEnd, contentStart))
+        val paragraphStart = result.isEmpty() || PARAGRAPH_BREAK_REGEX.containsMatchIn(chapter.text.substring(previousTextEnd, contentStart))
         result += BookSentence(hash.take(15).toLong(16), chapter.index, chapter.title, text, paragraphStart)
         previousTextEnd = start + raw.indexOfLast { !it.isWhitespace() } + 1
       }
@@ -99,7 +116,7 @@ object ReadAlongText {
     result
   }
 
-  fun tokens(text: String): List<String> = Regex("[\\p{L}\\p{N}]+(?:['’][\\p{L}]+)?")
+  fun tokens(text: String): List<String> = TOKEN_REGEX
     .findAll(text.lowercase(Locale.ENGLISH).replace('’', '\'')).map { it.value }.toList()
 
   fun defaultTracks(files: List<AudioFile>, currentIndex: Int): Set<Int> {
@@ -111,6 +128,58 @@ object ReadAlongText {
 }
 
 object ReadAlongTimeline {
+  fun mergeWindows(windows: List<LongRange>, durationMs: Long): List<LongRange> {
+    if (windows.isEmpty()) return emptyList()
+    val maxMs = if (durationMs > 0L) durationMs else Long.MAX_VALUE
+    val sorted = windows
+      .map { it.first.coerceAtLeast(0L)..it.last.coerceAtMost(maxMs) }
+      .filter { it.last > it.first }
+      .sortedBy { it.first }
+    if (sorted.isEmpty()) return emptyList()
+    val merged = ArrayList<LongRange>(sorted.size)
+    var curStart = sorted[0].first
+    var curEnd = sorted[0].last
+    for (i in 1 until sorted.size) {
+      val next = sorted[i]
+      if (next.first <= curEnd + 1_000L) {
+        curEnd = maxOf(curEnd, next.last)
+      } else {
+        merged += curStart..curEnd
+        curStart = next.first
+        curEnd = next.last
+      }
+    }
+    merged += curStart..curEnd
+    return merged
+  }
+
+  fun computeSyncCoverage(
+    windows: List<LongRange>,
+    positionMs: Long,
+    durationMs: Long,
+    matchedSentences: Int,
+    totalBookSentences: Int,
+    isSyncingNow: Boolean,
+    syncPausedReason: String?,
+  ): SyncCoverageStats {
+    val merged = mergeWindows(windows, durationMs)
+    val pos = positionMs.coerceAtLeast(0L)
+    val containing = merged.firstOrNull { pos in it.first..it.last }
+    val aheadMs = containing?.let { (it.last - pos).coerceAtLeast(0L) } ?: 0L
+    val coveredMs = merged.sumOf { (it.last - it.first).coerceAtLeast(0L) }
+    val trackRatio = if (durationMs > 0L) (coveredMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    return SyncCoverageStats(
+      aheadSyncedMs = aheadMs,
+      syncedWindowsMs = merged,
+      trackDurationMs = durationMs,
+      trackTimedRatio = trackRatio,
+      matchedSentences = matchedSentences,
+      totalBookSentences = totalBookSentences,
+      isSyncingNow = isSyncingNow,
+      syncPausedReason = syncPausedReason,
+    )
+  }
+
   fun activeIndex(lines: List<TimedLine>, positionMs: Long, offsetMs: Long): Int {
     if (lines.isEmpty()) return -1
     val targetMs = positionMs - offsetMs

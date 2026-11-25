@@ -5,21 +5,9 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
-import com.example.rivulet.data.lyrics.EpubBook
-import com.example.rivulet.data.lyrics.EpubChapter
 import com.example.rivulet.data.lyrics.ReadAlongStore
 import java.util.Calendar
 import java.util.LinkedHashMap
-
-data class CompanionBookSummary(
-  val infoHash: String,
-  val title: String,
-  val author: String,
-  val fileName: String,
-  val totalChapters: Int,
-  val createdAt: Long,
-  val isbn: String? = null,
-)
 
 data class SavedTorrent(
   val infoHash: String,
@@ -38,14 +26,6 @@ data class SavedTorrent(
 
   override fun hashCode(): Int = infoHash.hashCode()
 }
-
-data class SavedPlaybackPosition(
-  val infoHash: String,
-  val fileIndex: Int,
-  val positionMs: Long,
-  val durationMs: Long,
-  val updatedAt: Long,
-)
 
 data class ListeningHistoryItem(
   val infoHash: String,
@@ -429,19 +409,6 @@ class TorrentDatabase(context: Context, databaseName: String = DATABASE_NAME) :
     }
   }
 
-  fun deletePageText(infoHash: String, fileIndex: Int? = null) {
-    try {
-      val db = writableDatabase
-      if (fileIndex != null) {
-        db.delete("page_text_cache", "info_hash = ? AND file_index = ?", arrayOf(infoHash, fileIndex.toString()))
-      } else {
-        db.delete("page_text_cache", "info_hash = ?", arrayOf(infoHash))
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error deleting page text for $infoHash", t)
-    }
-  }
-
   fun getTorrent(infoHash: String): SavedTorrent? {
     try {
       readableDatabase.query(
@@ -795,54 +762,6 @@ class TorrentDatabase(context: Context, databaseName: String = DATABASE_NAME) :
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Sliding-Page Text Cache
-  // ---------------------------------------------------------------------------------------------
-
-  fun getPageText(infoHash: String, fileIndex: Int, pageIndex: Int): String? {
-    try {
-      readableDatabase.query(
-        "page_text_cache",
-        arrayOf("lines_json"),
-        "info_hash = ? AND file_index = ? AND page_index = ?",
-        arrayOf(infoHash, fileIndex.toString(), pageIndex.toString()),
-        null,
-        null,
-        null
-      ).use { cursor ->
-        if (cursor.moveToFirst()) {
-          return cursor.getString(0)
-        }
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error getting cached page text $infoHash/$fileIndex/p$pageIndex", t)
-    }
-    return null
-  }
-
-  fun savePageText(
-    infoHash: String,
-    fileIndex: Int,
-    pageIndex: Int,
-    startTimeMs: Long,
-    endTimeMs: Long,
-    linesJson: String,
-  ) {
-    try {
-      val cv = ContentValues().apply {
-        put("info_hash", infoHash)
-        put("file_index", fileIndex)
-        put("page_index", pageIndex)
-        put("start_time_ms", startTimeMs)
-        put("end_time_ms", endTimeMs)
-        put("lines_json", linesJson)
-      }
-      writableDatabase.insertWithOnConflict("page_text_cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error saving page text $infoHash/$fileIndex/p$pageIndex", t)
-    }
-  }
-
-  // ---------------------------------------------------------------------------------------------
   // Recent Searches
   // ---------------------------------------------------------------------------------------------
 
@@ -1016,227 +935,6 @@ class TorrentDatabase(context: Context, databaseName: String = DATABASE_NAME) :
       writableDatabase.delete("wishlist_books", "info_hash = ?", arrayOf(infoHash))
     } catch (t: Throwable) {
       Log.e(TAG, "Error removing from wishlist $infoHash", t)
-    }
-  }
-
-  fun isInWishlist(infoHash: String): Boolean {
-    try {
-      readableDatabase.query(
-        "wishlist_books",
-        arrayOf("info_hash"),
-        "info_hash = ?",
-        arrayOf(infoHash),
-        null,
-        null,
-        null
-      ).use { cursor ->
-        return cursor.moveToFirst()
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error checking wishlist $infoHash", t)
-    }
-    return false
-  }
-
-  // ---------------------------------------------------------------------------------------------
-  // Companion Book & Synced Chapter Persistence
-  // ---------------------------------------------------------------------------------------------
-
-  fun saveCompanionBook(
-    infoHash: String,
-    book: EpubBook,
-    fileName: String,
-    trackToChapterMap: Map<Int, EpubChapter>,
-  ) {
-    val db = writableDatabase
-    db.beginTransaction()
-    try {
-      // Clear existing companion data for this torrent
-      db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
-      db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
-
-      val now = System.currentTimeMillis()
-      val bookCv = ContentValues().apply {
-        put("info_hash", infoHash)
-        put("title", book.title)
-        put("author", book.author)
-        put("file_name", fileName)
-        put("total_chapters", book.chapters.size)
-        put("created_at", now)
-        if (book.isbn != null) put("isbn", book.isbn) else putNull("isbn")
-      }
-      db.insertWithOnConflict("companion_books", null, bookCv, SQLiteDatabase.CONFLICT_REPLACE)
-
-      // Inverse map: chapter index -> mapped fileIndex
-      val chapterToFileIndex = HashMap<Int, Int>()
-      for ((fIndex, chapter) in trackToChapterMap) {
-        chapterToFileIndex[chapter.index] = fIndex
-      }
-
-      for (chapter in book.chapters) {
-        val mappedFile = chapterToFileIndex[chapter.index]
-        val chapCv = ContentValues().apply {
-          put("info_hash", infoHash)
-          put("chapter_index", chapter.index)
-          put("title", chapter.title)
-          put("content", chapter.text)
-          put("word_count", chapter.wordCount)
-          if (mappedFile != null) put("mapped_file_index", mappedFile) else putNull("mapped_file_index")
-        }
-        db.insertWithOnConflict("companion_chapters", null, chapCv, SQLiteDatabase.CONFLICT_REPLACE)
-      }
-
-      db.setTransactionSuccessful()
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error saving companion book for $infoHash", t)
-    } finally {
-      db.endTransaction()
-    }
-  }
-
-  fun getCompanionBook(infoHash: String): CompanionBookSummary? {
-    try {
-      readableDatabase.query(
-        "companion_books",
-        arrayOf("info_hash", "title", "author", "file_name", "total_chapters", "created_at", "isbn"),
-        "info_hash = ?",
-        arrayOf(infoHash),
-        null,
-        null,
-        null
-      ).use { cursor ->
-        if (cursor.moveToFirst()) {
-          return CompanionBookSummary(
-            infoHash = cursor.getString(0),
-            title = cursor.getString(1),
-            author = cursor.getString(2) ?: "Unknown Author",
-            fileName = cursor.getString(3) ?: "book.epub",
-            totalChapters = cursor.getInt(4),
-            createdAt = cursor.getLong(5),
-            isbn = if (cursor.columnCount > 6) cursor.getString(6) else null,
-          )
-        }
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error getting companion book $infoHash", t)
-    }
-    return null
-  }
-
-  fun getCompanionChapterForTrack(infoHash: String, fileIndex: Int): EpubChapter? {
-    try {
-      // 1. Direct mapped file index lookup
-      readableDatabase.query(
-        "companion_chapters",
-        arrayOf("chapter_index", "title", "content", "word_count"),
-        "info_hash = ? AND mapped_file_index = ?",
-        arrayOf(infoHash, fileIndex.toString()),
-        null,
-        null,
-        "chapter_index ASC",
-        "1"
-      ).use { cursor ->
-        if (cursor.moveToFirst()) {
-          val idx = cursor.getInt(0)
-          return EpubChapter(
-            index = idx,
-            id = "db_ch_$idx",
-            href = "ch_$idx.xhtml",
-            title = cursor.getString(1),
-            text = cursor.getString(2),
-            wordCount = cursor.getInt(3),
-          )
-        }
-      }
-
-      // 2. Fallback: match by natural 1-based index (fileIndex + 1)
-      readableDatabase.query(
-        "companion_chapters",
-        arrayOf("chapter_index", "title", "content", "word_count"),
-        "info_hash = ? AND chapter_index = ?",
-        arrayOf(infoHash, (fileIndex + 1).toString()),
-        null,
-        null,
-        null
-      ).use { cursor ->
-        if (cursor.moveToFirst()) {
-          val idx = cursor.getInt(0)
-          return EpubChapter(
-            index = idx,
-            id = "db_ch_$idx",
-            href = "ch_$idx.xhtml",
-            title = cursor.getString(1),
-            text = cursor.getString(2),
-            wordCount = cursor.getInt(3),
-          )
-        }
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error getting companion chapter for $infoHash track $fileIndex", t)
-    }
-    return null
-  }
-
-  fun getAllCompanionChapters(infoHash: String): List<EpubChapter> {
-    val list = ArrayList<EpubChapter>()
-    try {
-      readableDatabase.query(
-        "companion_chapters",
-        arrayOf("chapter_index", "title", "content", "word_count"),
-        "info_hash = ?",
-        arrayOf(infoHash),
-        null,
-        null,
-        "chapter_index ASC"
-      ).use { cursor ->
-        while (cursor.moveToNext()) {
-          val idx = cursor.getInt(0)
-          list.add(
-            EpubChapter(
-              index = idx,
-              id = "db_ch_$idx",
-              href = "ch_$idx.xhtml",
-              title = cursor.getString(1),
-              text = cursor.getString(2),
-              wordCount = cursor.getInt(3),
-            )
-          )
-        }
-      }
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error getting all companion chapters $infoHash", t)
-    }
-    return list
-  }
-
-  fun updateChapterTrackMapping(infoHash: String, chapterIndex: Int, fileIndex: Int) {
-    try {
-      val cv = ContentValues().apply {
-        put("mapped_file_index", fileIndex)
-      }
-      writableDatabase.update(
-        "companion_chapters",
-        cv,
-        "info_hash = ? AND chapter_index = ?",
-        arrayOf(infoHash, chapterIndex.toString())
-      )
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error updating chapter mapping for $infoHash ch $chapterIndex", t)
-    }
-  }
-
-  fun deleteCompanionBook(infoHash: String) {
-    val db = writableDatabase
-    db.beginTransaction()
-    try {
-      db.delete("companion_books", "info_hash = ?", arrayOf(infoHash))
-      db.delete("companion_chapters", "info_hash = ?", arrayOf(infoHash))
-      db.delete("page_text_cache", "info_hash = ?", arrayOf(infoHash))
-      db.setTransactionSuccessful()
-    } catch (t: Throwable) {
-      Log.e(TAG, "Error deleting companion book $infoHash", t)
-    } finally {
-      db.endTransaction()
     }
   }
 

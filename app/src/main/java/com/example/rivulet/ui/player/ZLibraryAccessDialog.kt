@@ -53,6 +53,7 @@ fun ZLibraryAccessDialog(url: String, onDismiss: () -> Unit, onReady: (String, S
             settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.userAgentString = ZLibraryClient.USER_AGENT
+            resumeTimers()
             CookieManager.getInstance().setAcceptCookie(true)
             webViewClient = object : WebViewClient() {
               override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =

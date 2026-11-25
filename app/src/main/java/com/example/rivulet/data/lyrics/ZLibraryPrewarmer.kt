@@ -130,13 +130,14 @@ object ZLibraryPrewarmer {
 
   fun hasClearanceCookie(): Boolean = runCatching {
     val cookie = CookieManager.getInstance().getCookie(ZLibraryClient.BASE)
-    cookie != null && (cookie.contains("cf_clearance") || cookie.contains("remix_userkey") || cookie.isNotBlank())
+    cookie != null && (cookie.contains("cf_clearance") || cookie.contains("remix_userkey"))
   }.getOrDefault(false)
 
   private fun finish(success: Boolean) {
     runCatching { CookieManager.getInstance().flush() }
     runCatching {
       headlessWebView?.stopLoading()
+      headlessWebView?.pauseTimers()
       headlessWebView?.webViewClient = WebViewClient()
       headlessWebView?.destroy()
     }

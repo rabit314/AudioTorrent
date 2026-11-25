@@ -11,6 +11,10 @@ class BookCatalogMetadata(context: Context) {
   private val books = ConcurrentHashMap<String, Pair<String, CatalogBook>>()
   fun title(hash: String): String? = preferences.getString(hash, null)
   fun save(hash: String, title: String) { preferences.edit().putString(hash, title.take(1000)).apply() }
+  fun speed(hash: String): Float = preferences.getFloat("$hash:speed", 1.0f).coerceIn(0.5f, 3.0f)
+  fun saveSpeed(hash: String, speed: Float) {
+    preferences.edit().putFloat("$hash:speed", speed.coerceIn(0.5f, 3.0f)).apply()
+  }
   fun book(hash: String): CatalogBook? = preferences.getString("$hash:book", null)?.let { json ->
     books[hash]?.takeIf { it.first == json }?.let { return it.second }
     runCatching {
@@ -33,5 +37,8 @@ class BookCatalogMetadata(context: Context) {
     check(preferences.edit().putString("$hash:book", json.toString()).putString(hash, "${book.title} - ${book.author}").commit()) { "Could not save the audiobook catalog metadata." }
     books[hash] = json.toString() to book
   }
-  fun remove(hash: String) { books.remove(hash); preferences.edit().remove(hash).remove("$hash:book").apply() }
+  fun remove(hash: String) {
+    books.remove(hash)
+    preferences.edit().remove(hash).remove("$hash:book").remove("$hash:speed").apply()
+  }
 }

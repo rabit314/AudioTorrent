@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -523,7 +522,7 @@ fun LibraryScreen(
             val candidate = deleteCandidate ?: return@TextButton
             deleteCandidate = null
             scope.launch {
-              container.engine.deleteTorrent(candidate.infoHash, deleteDiskFiles)
+              container.engine.removeTorrent(candidate.infoHash, deleteDiskFiles)
               refreshHistory()
             }
           },

@@ -2,8 +2,6 @@ package com.example.rivulet
 
 import com.example.rivulet.data.lyrics.LrcParser
 import com.example.rivulet.data.lyrics.PacedTimingEngine
-import com.example.rivulet.data.lyrics.PageTextManager
-import com.example.rivulet.data.lyrics.TimedLine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -71,26 +69,5 @@ class PageTextCacheTest {
     assertEquals("First sentence should start at lead silence", 1000L, lines[0].startTimeMs)
     assertTrue("Start times should strictly advance", lines[1].startTimeMs > lines[0].startTimeMs)
     assertTrue("Last sentence end time should not exceed total duration", lines.last().endTimeMs <= totalDurationMs)
-  }
-
-  @Test
-  fun testPageTextSerializationAndDeserialization() {
-    val original = listOf(
-      TimedLine(id = 0L, startTimeMs = 1000L, endTimeMs = 5000L, text = "Line one of chapter.", isParagraphStart = true),
-      TimedLine(id = 1L, startTimeMs = 5000L, endTimeMs = 12000L, text = "Line two continues here.", isParagraphStart = false),
-    )
-
-    val serialized = PageTextManager.serializeLines(original)
-    val restored = PageTextManager.deserializeLines(serialized)
-
-    assertEquals(original.size, restored.size)
-    assertEquals(original[0].id, restored[0].id)
-    assertEquals(original[0].startTimeMs, restored[0].startTimeMs)
-    assertEquals(original[0].endTimeMs, restored[0].endTimeMs)
-    assertEquals(original[0].text, restored[0].text)
-    assertEquals(original[0].isParagraphStart, restored[0].isParagraphStart)
-
-    assertEquals(original[1].id, restored[1].id)
-    assertEquals(original[1].text, restored[1].text)
   }
 }

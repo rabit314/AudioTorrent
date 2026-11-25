@@ -25,9 +25,13 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.rivulet.theme.ReaderPalette
+import com.example.rivulet.theme.ReaderThemePreset
+import com.example.rivulet.theme.readerPaletteFor
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
@@ -37,6 +41,11 @@ internal fun FlowingReader(
   paragraphs: List<ReaderParagraph>, list: LazyListState, textSize: Int,
   activeId: Long?, selectedId: Long?, following: Boolean, editing: Boolean, visible: Boolean,
   onTap: (Long) -> Boolean, onLongPress: (Long) -> Unit, modifier: Modifier = Modifier,
+  palette: ReaderPalette = readerPaletteFor(ReaderThemePreset.BLACK_BLUE, MaterialTheme.colorScheme),
+  fontFamily: FontFamily = FontFamily.SansSerif,
+  lineSpacingExtraSp: Int = 8,
+  scrollTargetSentenceId: Long? = null,
+  scrollTargetNonce: Long = 0L,
 ) {
   val layouts = remember(paragraphs) { mutableStateMapOf<String, TextLayoutResult>() }
   var viewportWidth by remember { mutableIntStateOf(0) }
@@ -56,7 +65,7 @@ internal fun FlowingReader(
       }
     }.filterNotNull().collect { (key, character) -> anchorKey = key; anchorCharacter = character }
   }
-  LaunchedEffect(paragraphs, viewportWidth, textSize, fontScale, density, visible, following) {
+  LaunchedEffect(paragraphs, viewportWidth, textSize, fontScale, density, visible, following, fontFamily, lineSpacingExtraSp) {
     if (!visible || following || viewportWidth == 0) return@LaunchedEffect
     val key = anchorKey ?: return@LaunchedEffect
     val character = anchorCharacter
@@ -67,18 +76,22 @@ internal fun FlowingReader(
       if (list.layoutInfo.visibleItemsInfo.none { it.index == index }) list.scrollToItem(index)
       val layout = snapshotFlow { layouts[key]?.takeIf {
         it.size.width == viewportWidth && it.layoutInput.style.fontSize == textSize.sp &&
+          it.layoutInput.style.lineHeight == (textSize + lineSpacingExtraSp).sp &&
+          it.layoutInput.style.fontFamily == fontFamily &&
           it.layoutInput.density.fontScale == fontScale && it.layoutInput.density.density == density
       } }.filterNotNull().first()
       list.scrollToItem(index, layout.getBoundingBox(character.coerceIn(0, paragraphs[index].text.lastIndex)).top.roundToInt())
     } finally { restoringAnchor = false }
   }
-  LaunchedEffect(paragraphs, activeId, following, editing, visible, textSize, fontScale, density, viewportWidth) {
+  LaunchedEffect(paragraphs, activeId, following, editing, visible, textSize, fontScale, density, viewportWidth, fontFamily, lineSpacingExtraSp) {
     if (!visible || !following || editing || activeId == null) return@LaunchedEffect
     val index = paragraphs.indexOfFirst { block -> block.ranges.any { it.sentenceId == activeId } }
     if (index < 0) return@LaunchedEffect
     val block = paragraphs[index]
     if (list.layoutInfo.visibleItemsInfo.none { it.index == index }) list.scrollToItem(index)
     val layout = snapshotFlow { layouts[block.key]?.takeIf { it.size.width == viewportWidth && it.layoutInput.style.fontSize == textSize.sp &&
+      it.layoutInput.style.lineHeight == (textSize + lineSpacingExtraSp).sp &&
+      it.layoutInput.style.fontFamily == fontFamily &&
       it.layoutInput.density.fontScale == fontScale && it.layoutInput.density.density == density } }
       .filterNotNull().first()
     val range = block.ranges.first { it.sentenceId == activeId }
@@ -87,10 +100,22 @@ internal fun FlowingReader(
     val offset = (sentenceTop - list.layoutInfo.viewportSize.height * 0.25f).roundToInt()
     list.animateScrollToItem(index, offset)
   }
+  LaunchedEffect(scrollTargetNonce, scrollTargetSentenceId, paragraphs) {
+    val targetId = scrollTargetSentenceId ?: return@LaunchedEffect
+    if (scrollTargetNonce <= 0L) return@LaunchedEffect
+    val index = paragraphs.indexOfFirst { block -> block.ranges.any { it.sentenceId == targetId } }
+    if (index < 0) return@LaunchedEffect
+    val block = paragraphs[index]
+    if (list.layoutInfo.visibleItemsInfo.none { it.index == index }) list.scrollToItem(index)
+    val layout = snapshotFlow { layouts[block.key] }.filterNotNull().first()
+    val range = block.ranges.firstOrNull { it.sentenceId == targetId }
+    val offset = range?.let { (layout.getBoundingBox(it.start).top - 24f).roundToInt().coerceAtLeast(0) } ?: 0
+    list.scrollToItem(index, offset)
+  }
   LazyColumn(state = list, modifier = modifier.onSizeChanged { viewportWidth = it.width }.testTag("readalong-lines"),
-    contentPadding = PaddingValues(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    contentPadding = PaddingValues(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     items(paragraphs, key = { it.key }) { paragraph ->
-      ReaderParagraphText(paragraph, textSize, activeId, selectedId, editing, onTap, onLongPress,
+      ReaderParagraphText(paragraph, textSize, activeId, selectedId, editing, palette, fontFamily, lineSpacingExtraSp, onTap, onLongPress,
         onLayout = { layouts[paragraph.key] = it })
       DisposableEffect(paragraph.key) { onDispose { layouts.remove(paragraph.key) } }
     }
@@ -100,6 +125,7 @@ internal fun FlowingReader(
 @Composable
 private fun ReaderParagraphText(
   paragraph: ReaderParagraph, textSize: Int, activeId: Long?, selectedId: Long?, editing: Boolean,
+  palette: ReaderPalette, fontFamily: FontFamily, lineSpacingExtraSp: Int,
   onTap: (Long) -> Boolean, onLongPress: (Long) -> Unit, onLayout: (TextLayoutResult) -> Unit,
 ) {
   var layout by remember(paragraph.text) { mutableStateOf<TextLayoutResult?>(null) }
@@ -109,7 +135,6 @@ private fun ReaderParagraphText(
   val preferred = selectedId ?: activeId
   val lastActionPage = (paragraph.ranges.size - 1) / 14
   val actionPage = (accessibilityPage ?: (paragraph.ranges.indexOfFirst { it.sentenceId == preferred }.coerceAtLeast(0) / 14)).coerceIn(0, lastActionPage)
-  val colors = MaterialTheme.colorScheme
   fun sentenceAt(point: Offset): Long? {
     val result = layout ?: return null
     if (point.y < 0 || point.y >= result.size.height) return null
@@ -119,19 +144,21 @@ private fun ReaderParagraphText(
     if (point.x < result.getLineLeft(line) || point.x > result.getLineRight(line)) return null
     return paragraph.sentenceAt(result.getOffsetForPosition(point))
   }
-  Text(paragraph.text, fontSize = textSize.sp, lineHeight = (textSize + 8).sp, fontWeight = FontWeight.Medium,
-    color = colors.onSurfaceVariant, onTextLayout = { layout = it; onLayout(it) },
+  Text(paragraph.text, fontSize = textSize.sp, lineHeight = (textSize + lineSpacingExtraSp).sp,
+    fontFamily = fontFamily,
+    fontWeight = if (palette.isLight) FontWeight.Normal else FontWeight.Medium,
+    color = palette.bodyText, onTextLayout = { layout = it; onLayout(it) },
     modifier = Modifier.fillMaxWidth().testTag("reader-paragraph-${paragraph.key}").drawWithContent {
       val measured = layout
       val highlights = if (measured == null) emptyList() else paragraph.ranges.filter { it.sentenceId == activeId || it.sentenceId == selectedId }
         .map { range -> range to measured.getPathForRange(range.start, range.end) }
       highlights.forEach { (range, path) ->
-        drawPath(path, colors.primaryContainer.copy(alpha = if (range.sentenceId == selectedId) 0.85f else 0.45f))
+        drawPath(path, if (range.sentenceId == selectedId) palette.selectedHighlightFill else palette.activeHighlightFill)
       }
       drawContent()
       if (measured != null) highlights.forEach { (range, path) ->
-        clipPath(path) { drawText(measured, color = colors.onSurface) }
-        if (range.sentenceId == selectedId) drawPath(path, colors.primary, style = Stroke(1.dp.toPx()))
+        clipPath(path) { drawText(measured, color = palette.activeText) }
+        if (range.sentenceId == selectedId) drawPath(path, palette.selectedBorder, style = Stroke(1.dp.toPx()))
       }
     }.pointerInput(paragraph) {
       // Tap detectors cancel on parent horizontal/vertical scrolling; swipes never select or seek.

@@ -186,6 +186,37 @@ class ReadAlongCoreTest {
     assertTrue(hydrated.isTimed)
   }
 
+  @Test fun syncCoverageComputesContiguousAheadBufferAndTrackRatio() {
+    val windows = listOf(0L..20_000L, 20_000L..40_000L, 40_000L..60_000L, 120_000L..140_000L)
+    val merged = ReadAlongTimeline.mergeWindows(windows, 200_000L)
+    assertEquals(listOf(0L..60_000L, 120_000L..140_000L), merged)
+
+    val stats = ReadAlongTimeline.computeSyncCoverage(
+      windows = windows,
+      positionMs = 15_000L,
+      durationMs = 200_000L,
+      matchedSentences = 30,
+      totalBookSentences = 1000,
+      isSyncingNow = false,
+      syncPausedReason = "Balanced (+3m limit)",
+    )
+    assertEquals(45_000L, stats.aheadSyncedMs)
+    assertEquals(0.4f, stats.trackTimedRatio, 0.001f)
+    assertEquals(30, stats.matchedSentences)
+    assertEquals(1000, stats.totalBookSentences)
+    assertEquals("Balanced (+3m limit)", stats.syncPausedReason)
+  }
+
+  @Test fun hintScopedMatcherFastPathMatchesSequentialPassages() {
+    val sentences = (1..20).map { i ->
+      BookSentence(i.toLong(), 1, "Chapter 1", "Sentence number $i describes a distinct voyage across the quiet northern ocean.")
+    }
+    val matcher = NarrationMatcher(sentences)
+    val words = timedWords(sentences[9].text + " " + sentences[10].text)
+    val matched = matcher.align(words, hintSentence = 8)
+    assertEquals(listOf(10L, 11L), matched.map { it.id })
+  }
+
   private fun timedWords(text: String) = ReadAlongText.tokens(text).mapIndexed { i, word -> SpeechWord(word, i * 500L, (i + 1) * 500L) }
   private fun audio(index: Int, path: String) = AudioFile(index, path, path.substringAfterLast('/'), 100, 100, true)
 }

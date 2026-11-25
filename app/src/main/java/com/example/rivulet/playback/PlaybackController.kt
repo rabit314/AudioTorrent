@@ -2,6 +2,7 @@ package com.example.rivulet.playback
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
@@ -14,34 +15,27 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.example.rivulet.data.AudioFile
+import com.example.rivulet.data.BookCatalogMetadata
 import com.example.rivulet.data.BookmarkEntry
 import com.example.rivulet.data.TorrentDatabase
-import com.example.rivulet.data.lyrics.AudioBookAligner
-import com.example.rivulet.data.lyrics.accepts
-import com.example.rivulet.data.lyrics.EpubChapter
-import com.example.rivulet.data.lyrics.EpubExtractor
-import com.example.rivulet.data.lyrics.LrcParser
-import com.example.rivulet.data.lyrics.PageTextManager
-import com.example.rivulet.data.lyrics.PacedTimingEngine
-import com.example.rivulet.data.lyrics.TextSyncSource
 import com.example.rivulet.data.lyrics.TimedLine
+import com.example.rivulet.data.lyrics.accepts
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import android.net.Uri
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -89,7 +83,7 @@ class PlaybackController(
           DefaultHttpDataSource.Factory()
             .setConnectTimeoutMs(30_000)
             .setReadTimeoutMs(120_000)
-            .setUserAgent("AudioTorrent/0.2.0")
+            .setUserAgent("AudioTorrent/0.3.0")
         )
       )
       .setSeekBackIncrementMs(15_000)
@@ -107,8 +101,11 @@ class PlaybackController(
       }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+  private val catalogMetadata = BookCatalogMetadata(context.applicationContext)
   private val _state = MutableStateFlow(PlaybackUi())
   val state: StateFlow<PlaybackUi> = _state.asStateFlow()
+
+  private val tickActive = MutableStateFlow(false)
 
   private var currentTitle = ""
   private var currentSubtitle = ""
@@ -127,6 +124,11 @@ class PlaybackController(
   val currentQueueIndex = MutableStateFlow<Int>(-1)
   val bookmarks = MutableStateFlow<List<BookmarkEntry>>(emptyList())
   var queueProvider: ((infoHash: String) -> List<QueueTrack>)? = null
+    set(value) {
+      field = value
+      refreshRestoredMetadata()
+      updateTickState()
+    }
   var trackPreparer: (suspend (infoHash: String, fileIndex: Int) -> PreparedPlayback)? = null
   private var requestSequence = 0L
   private var requestOwner: Job? = null
@@ -149,6 +151,8 @@ class PlaybackController(
         currentCoverUrl = latest.coverUrl
         currentInfoHash = latest.infoHash
         currentFileIndex = latest.fileIndex
+        val savedSpeed = catalogMetadata.speed(latest.infoHash)
+        if (savedSpeed != 1.0f) player.playbackParameters = PlaybackParameters(savedSpeed)
         readAlong.activate(com.example.rivulet.data.lyrics.ReadAlongTrack(latest.infoHash, latest.fileIndex), latest.positionMs, latest.durationMs)
         _state.value =
           PlaybackUi(
@@ -160,7 +164,11 @@ class PlaybackController(
             hasMedia = true,
             positionMs = latest.positionMs,
             durationMs = latest.durationMs,
+            speed = savedSpeed,
           )
+        refreshRestoredMetadata()
+        refreshBookmarks()
+        updateTickState()
       }
     }
     player.addListener(
@@ -168,6 +176,8 @@ class PlaybackController(
         override fun onIsPlayingChanged(isPlaying: Boolean) {
           if (!isPlaying) saveCurrentPosition()
           publish()
+          syncReadAlongSnapshot()
+          updateTickState()
         }
 
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
@@ -186,41 +196,69 @@ class PlaybackController(
             }
           }
           publish()
+          syncReadAlongSnapshot()
+          updateTickState()
+        }
+
+        override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+          publish()
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+          if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+            readAlong.playbackDiscontinuity()
+          }
+          publish()
+          syncReadAlongSnapshot()
         }
 
         override fun onPlayerError(error: PlaybackException) {
           Log.e(TAG, "Playback failed: ${error.errorCodeName}", error)
           lastError = describePlaybackError(error)
           publish()
-        }
-
-        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-          if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) readAlong.playbackDiscontinuity()
+          updateTickState()
         }
       }
     )
 
-    // Periodic UI update and position saver
+    // Event-gated periodic UI update & position saver: suspends at 0% CPU when paused and metadata is resolved.
     scope.launch {
-      var ticks = 0
-      while (isActive) {
-        refreshRestoredMetadata()
-        publish()
-        val hash = currentInfoHash
-        if (hash != null && currentFileIndex >= 0) {
-          val prepared = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
-          val snapshot = _state.value
-          readAlong.playback(if (prepared) player.currentPosition else snapshot.positionMs,
-            if (prepared) player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L else snapshot.durationMs,
-            com.example.rivulet.data.lyrics.ReadAlongTrack(hash, currentFileIndex), prepared)
-        }
-        delay(350)
-        ticks++
-        if (ticks % 10 == 0 && player.isPlaying) {
-          saveCurrentPosition()
+      tickActive.collectLatest { active ->
+        if (!active) return@collectLatest
+        var ticks = 0
+        while (isActive && tickActive.value) {
+          refreshRestoredMetadata()
+          publish()
+          syncReadAlongSnapshot()
+          delay(350)
+          ticks++
+          if (ticks % 10 == 0 && player.isPlaying) {
+            saveCurrentPosition()
+          }
+          updateTickState()
         }
       }
     }
+  }
+
+  private fun updateTickState() {
+    val awaitingMetadata = player.mediaItemCount == 0 && currentInfoHash != null && queue.isEmpty()
+    val playingOrBuffering = player.isPlaying || player.playbackState == Player.STATE_BUFFERING
+    tickActive.value = playingOrBuffering || awaitingMetadata
+  }
+
+  private fun syncReadAlongSnapshot() {
+    val hash = currentInfoHash ?: return
+    if (currentFileIndex < 0) return
+    val prepared = player.mediaItemCount > 0 && player.playbackState != Player.STATE_IDLE
+    val snapshot = _state.value
+    readAlong.playback(
+      position = if (prepared) player.currentPosition else snapshot.positionMs,
+      duration = if (prepared) player.duration.takeIf { it > 0 && it != C.TIME_UNSET } ?: 0L else snapshot.durationMs,
+      track = com.example.rivulet.data.lyrics.ReadAlongTrack(hash, currentFileIndex),
+      prepared = prepared,
+      isPlaying = player.isPlaying,
+    )
   }
 
   fun setQueue(tracks: List<QueueTrack>, startIndex: Int) {
@@ -229,6 +267,7 @@ class PlaybackController(
     currentQueue.value = tracks
     currentQueueIndex.value = queueIndex
     publish()
+    updateTickState()
   }
 
   private var activePlaybackJob: Job? = null
@@ -368,6 +407,8 @@ class PlaybackController(
       currentCoverUrl = track.coverUrl ?: currentCoverUrl
       queue = tracks; queueIndex = index
       currentQueue.value = tracks; currentQueueIndex.value = index
+      publish()
+      updateTickState()
     }
   }
 
@@ -385,6 +426,7 @@ class PlaybackController(
     // Save previous position before switching
     saveCurrentPosition()
 
+    val previousInfoHash = currentInfoHash
     val resolvedCover = coverUrl ?: infoHash?.let { database.getTorrent(it)?.coverUrl }
 
     currentTitle = title
@@ -393,6 +435,13 @@ class PlaybackController(
     currentInfoHash = infoHash
     currentFileIndex = fileIndex
     lastError = null
+
+    if (infoHash != null && infoHash != previousInfoHash) {
+      val bookSpeed = catalogMetadata.speed(infoHash)
+      if (player.playbackParameters.speed != bookSpeed) {
+        player.playbackParameters = PlaybackParameters(bookSpeed)
+      }
+    }
 
     // Start background MediaSessionService
     runCatching {
@@ -467,6 +516,8 @@ class PlaybackController(
       player.play()
     }
     publish()
+    syncReadAlongSnapshot()
+    updateTickState()
   }
 
   fun togglePlayPause() {
@@ -535,6 +586,7 @@ class PlaybackController(
     val max = if (duration > 0 && duration != C.TIME_UNSET) duration else positionMs
     player.seekTo(positionMs.coerceIn(0L, max))
     publish()
+    syncReadAlongSnapshot()
   }
 
   fun seekBy(offsetMs: Long) {
@@ -545,6 +597,7 @@ class PlaybackController(
     val target = (cur + offsetMs).coerceIn(0L, max)
     player.seekTo(target)
     publish()
+    syncReadAlongSnapshot()
   }
 
   fun toggleVoiceBoost(): Boolean {
@@ -572,6 +625,7 @@ class PlaybackController(
   fun setSpeed(speed: Float) {
     val clamped = speed.coerceIn(0.5f, 3.0f)
     player.playbackParameters = PlaybackParameters(clamped)
+    currentInfoHash?.let { catalogMetadata.saveSpeed(it, clamped) }
     publish()
   }
 
@@ -586,6 +640,7 @@ class PlaybackController(
     currentFileIndex = -1
     lastError = null
     publish()
+    updateTickState()
   }
 
   private fun saveCurrentPosition() {

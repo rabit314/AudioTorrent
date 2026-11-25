@@ -17,7 +17,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.rivulet.AppContainer
-import com.example.rivulet.data.lyrics.BookTitleCleaner
 import com.example.rivulet.ui.formatDuration
 import kotlinx.coroutines.launch
 
@@ -29,6 +28,7 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
   val currentQueueIndex by container.playback.currentQueueIndex.collectAsStateWithLifecycle()
   val bookmarks by container.playback.bookmarks.collectAsStateWithLifecycle()
   val torrents by container.engine.torrents.collectAsStateWithLifecycle()
+  val readAlongState by container.playback.readAlong.state.collectAsStateWithLifecycle()
   var showSpeedDialog by remember { mutableStateOf(false) }
   var showChaptersSheet by remember { mutableStateOf(false) }
   var showAddBookmarkDialog by remember { mutableStateOf(false) }
@@ -231,12 +231,22 @@ fun PlayerScreen(container: AppContainer, onBack: () -> Unit, modifier: Modifier
 
   // Add Bookmark Dialog
   if (showAddBookmarkDialog) {
+    val activeQuote = (readAlongState.correction.target?.sentenceId?.let { id ->
+      readAlongState.lines.firstOrNull { it.id == id }?.text
+    } ?: readAlongState.lines.getOrNull(readAlongState.activeLineIndex)?.text)?.takeIf { it.isNotBlank() }
     AlertDialog(
       onDismissRequest = { showAddBookmarkDialog = false; newBookmarkNote = "" },
       title = { Text("Add Bookmark at ${formatDuration(state.positionMs)}") },
       text = {
         Column {
           Text("Save this moment with an optional note:", style = MaterialTheme.typography.bodyMedium)
+          if (activeQuote != null) {
+            Spacer(Modifier.height(6.dp))
+            SuggestionChip(
+              onClick = { newBookmarkNote = "\"$activeQuote\"" },
+              label = { Text("Quote active sentence", maxLines = 1) },
+            )
+          }
           Spacer(Modifier.height(8.dp))
           OutlinedTextField(
             value = newBookmarkNote,

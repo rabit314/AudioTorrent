@@ -42,10 +42,6 @@ class MainActivity : ComponentActivity() {
 
     if (savedInstanceState == null) {
       handleIntent(intent)
-      lifecycleScope.launch(Dispatchers.Main) {
-        kotlinx.coroutines.delay(1200)
-        com.example.rivulet.data.lyrics.ZLibraryPrewarmer.warmUp(applicationContext)
-      }
     }
   }
 

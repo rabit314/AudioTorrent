@@ -72,11 +72,12 @@ data class TorrentUi(
     get() = isReady && audioFiles.isNotEmpty() && audioFiles.all { it.isDownloaded }
 }
 
+private val NATURAL_TOKEN_REGEX = Regex("(\\d+)|(\\D+)")
+
 /** Natural alphanumeric comparator for chapters and filenames (e.g., Chapter 2 before Chapter 10). */
 val NATURAL_NAME_COMPARATOR = Comparator<String> { s1, s2 ->
-  val r = Regex("(\\d+)|(\\D+)")
-  val m1 = r.findAll(s1).map { it.value }.toList()
-  val m2 = r.findAll(s2).map { it.value }.toList()
+  val m1 = NATURAL_TOKEN_REGEX.findAll(s1).map { it.value }.toList()
+  val m2 = NATURAL_TOKEN_REGEX.findAll(s2).map { it.value }.toList()
   val minLen = minOf(m1.size, m2.size)
   for (i in 0 until minLen) {
     val p1 = m1[i]

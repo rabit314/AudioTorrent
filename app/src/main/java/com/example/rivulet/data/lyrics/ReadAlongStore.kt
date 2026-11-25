@@ -31,6 +31,9 @@ class ReadAlongStore(private val database: TorrentDatabase) {
         db.delete("readalong_windows", "info_hash = ? AND file_index = ?", arrayOf(track.infoHash, index.toString()))
         db.delete("page_text_cache", "info_hash = ? AND file_index = ?", arrayOf(track.infoHash, index.toString()))
       }
+      // Prune unreferenced books/chapters left behind after replacing an edition.
+      db.execSQL("DELETE FROM readalong_chapters WHERE book_id NOT IN (SELECT DISTINCT book_id FROM readalong_tracks)")
+      db.execSQL("DELETE FROM readalong_books WHERE id NOT IN (SELECT DISTINCT book_id FROM readalong_tracks)")
       db.setTransactionSuccessful()
     } finally { db.endTransaction() }
   }
@@ -116,6 +119,18 @@ class ReadAlongStore(private val database: TorrentDatabase) {
   }
 
   fun windowReady(track: ReadAlongTrack, bookId: String, startMs: Long): Boolean = database.readableDatabase.rawQuery("SELECT 1 FROM readalong_windows WHERE info_hash=? AND file_index=? AND book_id=? AND start_ms<=? AND end_ms>? LIMIT 1", arrayOf(track.infoHash, track.fileIndex.toString(), bookId, startMs.toString(), startMs.toString())).use { it.moveToFirst() }
+
+  fun windows(track: ReadAlongTrack, bookId: String): List<LongRange> = database.readableDatabase.query(
+    "readalong_windows",
+    arrayOf("start_ms", "end_ms"),
+    "info_hash=? AND file_index=? AND book_id=?",
+    arrayOf(track.infoHash, track.fileIndex.toString(), bookId),
+    null,
+    null,
+    "start_ms ASC",
+  ).use { c ->
+    buildList { while (c.moveToNext()) add(c.getLong(0)..c.getLong(1)) }
+  }
 
   /** Explicit retry invalidates only completion markers; confident timestamps stay immutable. */
   fun retryWindow(track: ReadAlongTrack, bookId: String, startMs: Long) {

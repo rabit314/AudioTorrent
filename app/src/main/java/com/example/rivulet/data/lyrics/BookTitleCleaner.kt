@@ -93,18 +93,4 @@ object BookTitleCleaner {
 
     return s.replace(Regex("\\s+"), " ").trim()
   }
-
-  /**
-   * Intelligently resolves the true book title from the current track name and container/torrent name.
-   *
-   * Example 1: track = "[01] Soul Hunter.m4b", container = "Night Lords"
-   *   -> Returns "Soul Hunter" (identifies specific book inside omnibus).
-   * Example 2: track = "Chapter 01.mp3", container = "Fahrenheit 451"
-   *   -> Returns "Fahrenheit 451" (identifies book title when tracks are generic chapters).
-   * Example 3: track = "Ray Bradbury - Fahrenheit 451.m4b", container = "Ray Bradbury"
-   *   -> Returns "Fahrenheit 451".
-   */
-  fun resolveCleanBookTitle(trackTitle: String?, containerTitle: String?): String {
-    return BookIdentityResolver.resolve(trackTitle, container = containerTitle).title
-  }
 }

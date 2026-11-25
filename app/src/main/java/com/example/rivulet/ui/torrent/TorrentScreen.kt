@@ -3,6 +3,8 @@ package com.example.rivulet.ui.torrent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,11 +22,11 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,7 +63,7 @@ import com.example.rivulet.ui.formatDuration
 import com.example.rivulet.ui.formatRate
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TorrentScreen(
   container: AppContainer,
@@ -185,7 +187,42 @@ fun TorrentScreen(
         if (torrent.audioFiles.isNotEmpty()) {
           Spacer(Modifier.height(12.dp))
           val allWanted = torrent.audioFiles.all { it.isWanted || it.isDownloaded }
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          val resumeFile = sortedFiles.firstOrNull { it.savedPositionMs > 3000L } ?: sortedFiles.firstOrNull()
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (resumeFile != null) {
+              FilledTonalButton(
+                enabled = preparing == null,
+                onClick = {
+                  scope.launch {
+                    preparing = resumeFile.index
+                    val queueTracks = sortedFiles.map {
+                      val titleText = it.chapterTitle ?: if (it.directory.isNotBlank()) "${it.directory} - ${it.name}" else it.name
+                      QueueTrack(
+                        infoHash = infoHash,
+                        fileIndex = it.index,
+                        title = titleText,
+                        subtitle = torrent.name,
+                        coverUrl = torrent.coverUrl,
+                      )
+                    }
+                    container.playback.requestPlayback(
+                      infoHash = infoHash,
+                      fileIndex = resumeFile.index,
+                      queueOverride = queueTracks,
+                    )
+                      .onSuccess { onPlay() }
+                      .onFailure { error = it.message ?: "Couldn't start playback." }
+                    preparing = null
+                  }
+                },
+              ) {
+                Text(
+                  if (resumeFile.savedPositionMs > 3000L) "Resume #${resumeFile.index + 1} · ${formatDuration(resumeFile.savedPositionMs)}"
+                  else "Play from start",
+                  maxLines = 1,
+                )
+              }
+            }
             OutlinedButton(
               onClick = {
                 container.engine.setTorrentDownloadWanted(infoHash, !allWanted)

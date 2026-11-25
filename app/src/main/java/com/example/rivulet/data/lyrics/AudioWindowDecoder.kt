@@ -97,7 +97,7 @@ class AudioWindowDecoder(private val dataSource: suspend (ReadAlongTrack) -> Med
       }
       check(resampler.size >= 1600) { "Not enough audio is available for speech matching yet." }
       android.util.Log.d("ReadAlongPerf", "decodeSetupMs=${configured-began} codecLoopMs=${android.os.SystemClock.elapsedRealtime()-configured} readMs=${readNs/1_000_000} resampleMs=${resampleNs/1_000_000} buffers=$outputBuffers rate=$rate channels=$channels samples=${resampler.size}")
-      resampler.samples.copyOf(resampler.size)
+      if (resampler.size == resampler.samples.size) resampler.samples else resampler.samples.copyOf(resampler.size)
     } finally {
       codec?.let { runCatching { it.stop() }; it.release() }
       extractor.release()

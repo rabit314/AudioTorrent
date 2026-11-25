@@ -36,6 +36,7 @@ class StreamSession(
   private val closed = AtomicBoolean(false)
   private val refs = AtomicInteger(0)
   private var lastWindowPos = -1L
+  @Volatile private var allPiecesComplete = false
 
   val name: String = files.fileName(fileIndex)
   val fileSize: Long = files.fileSize(fileIndex)
@@ -130,6 +131,8 @@ class StreamSession(
 
   /** Suspends until every piece covering [from, to] is verified on disk. */
   suspend fun awaitRange(from: Long, to: Long, timeoutMs: Long = DEFAULT_TIMEOUT_MS) {
+    if (closed.get()) error("Stream closed")
+    if (allPiecesComplete) return
     val first = pieceAt(from)
     val last = pieceAt(to)
     val deadline = SystemClock.elapsedRealtime() + timeoutMs
@@ -150,6 +153,12 @@ class StreamSession(
         }
       }
       if (ready) {
+        if (!allPiecesComplete && fileSize > 0L) {
+          val fileFirst = pieceAt(0)
+          val fileLast = pieceAt(fileSize - 1)
+          val fullDone = runCatching { (fileFirst..fileLast).all { handle.havePiece(it) } }.getOrDefault(false)
+          if (fullDone) allPiecesComplete = true
+        }
         Log.d(TAG, "Ready: pieces $first-$last available for $name")
         return
       }

@@ -1,10 +1,12 @@
 package com.example.rivulet.data.lyrics
 
 import java.io.ByteArrayInputStream
-import java.io.InputStream
-import java.util.zip.ZipInputStream
 
 object EpubExtractor {
+  private val CHAPTER_PATTERN = Regex("(?m)^(?:chapter|part|section|book)\\s+([0-9ivxlcdm]+|[a-z]+)[\t :.-]*([^\r\n]*)", RegexOption.IGNORE_CASE)
+  private val WHITESPACE_REGEX = Regex("\\s+")
+  private val HORIZONTAL_WS_REGEX = Regex("[ \\t]+")
+  private val MULTI_NEWLINE_REGEX = Regex("\\n{3,}")
 
   fun extractBookFromBytes(bytes: ByteArray, fileName: String): EpubBook {
     val lower = fileName.lowercase()
@@ -23,9 +25,7 @@ object EpubExtractor {
     val clean = text.trim()
     if (clean.isBlank()) return emptyList()
 
-    // Detect chapter split patterns (e.g., "Chapter 1", "CHAPTER I", "Section 1")
-    val chapterPattern = Regex("(?m)^(?:chapter|part|section|book)\\s+([0-9ivxlcdm]+|[a-z]+)[\t :.-]*([^\r\n]*)", RegexOption.IGNORE_CASE)
-    val matches = chapterPattern.findAll(clean).toList()
+    val matches = CHAPTER_PATTERN.findAll(clean).toList()
 
     if (matches.size >= 2) {
       val result = ArrayList<EpubChapter>()
@@ -35,7 +35,7 @@ object EpubExtractor {
         val chunk = clean.substring(start, end).trim()
         val titleLine = chunk.lines().firstOrNull()?.trim() ?: "Chapter ${i + 1}"
         val content = if (chunk.lines().size > 1) chunk.lines().drop(1).joinToString("\n").trim() else chunk
-        val words = chunk.split(Regex("\\s+")).count { it.isNotBlank() }
+        val words = chunk.split(WHITESPACE_REGEX).count { it.isNotBlank() }
 
         result.add(
           EpubChapter(
@@ -52,7 +52,7 @@ object EpubExtractor {
     }
 
     // Single chapter fallback
-    val words = clean.split(Regex("\\s+")).count { it.isNotBlank() }
+    val words = clean.split(WHITESPACE_REGEX).count { it.isNotBlank() }
     return listOf(
       EpubChapter(
         index = 1,
@@ -65,33 +65,12 @@ object EpubExtractor {
     )
   }
 
-  /**
-   * Reads an EPUB stream and extracts clean text from all XHTML/HTML chapter documents.
-   */
-  fun extractTextFromEpub(inputStream: InputStream): String {
-    val book = EpubStructureParser.parse(inputStream)
-    return if (book.chapters.isNotEmpty()) {
-      book.chapters.joinToString("\n\n") { it.text }
-    } else {
-      ""
-    }
-  }
-
-  fun extractTextFromBytes(bytes: ByteArray, fileName: String): String {
-    val lower = fileName.lowercase()
-    return when {
-      lower.endsWith(".epub") -> extractTextFromEpub(ByteArrayInputStream(bytes))
-      lower.endsWith(".txt") -> String(bytes, Charsets.UTF_8)
-      else -> String(bytes, Charsets.UTF_8)
-    }
-  }
-
   fun stripHtml(html: String): String {
     val doc = org.jsoup.Jsoup.parse(html)
     doc.select("script, style, nav").remove()
     doc.select("br").forEach { it.before(org.jsoup.nodes.TextNode("\n")) }
     doc.select("p, div, h1, h2, h3, li").forEach { it.appendChild(org.jsoup.nodes.TextNode("\n\n")) }
-    return doc.body().wholeText().replace('\u00a0', ' ').replace(Regex("[ \\t]+"), " ")
-      .replace(Regex("\\n{3,}"), "\n\n").trim()
+    return doc.body().wholeText().replace('\u00a0', ' ').replace(HORIZONTAL_WS_REGEX, " ")
+      .replace(MULTI_NEWLINE_REGEX, "\n\n").trim()
   }
 }

@@ -139,13 +139,18 @@ class AutomaticTextAndCacheTest {
 
   @Test fun cachedFarPositionSurvivesDatabaseReopenWithZeroDecodeOrRecognition() = runBlocking {
     val name = "cached-${UUID.randomUUID()}.db"; val calls = AtomicInteger()
+    val prefs = ReaderPreferences(context); val previousMode = prefs.syncMode.value
+    prefs.setSyncMode(SyncMode.BALANCED)
     try {
       repeat(2) { pass ->
         val db = TorrentDatabase(context, name); val store = ReadAlongStore(db)
         if (pass == 0) {
           val b = book(); store.attach(track, b, setOf(3)); val sentence = ReadAlongText.sentences(b.book, b.id).single()
-          store.saveWindow(track, b.id, 3_600_000, 3_620_000, listOf(TimedLine(sentence.id, 3_601_000, 3_605_000, text)))
-          store.saveWindow(track, b.id, 3_620_000, 3_640_000, emptyList()); store.setOffset(track, 500)
+          for (windowStart in 3_600_000L..3_760_000L step 20_000L) {
+            val lines = if (windowStart == 3_600_000L) listOf(TimedLine(sentence.id, 3_601_000, 3_605_000, text)) else emptyList()
+            store.saveWindow(track, b.id, windowStart, windowStart + 20_000L, lines)
+          }
+          store.setOffset(track, 500)
         }
         val r = ReadAlongRepository(context, store, ReadAlongAudioDecoder { _, _, _ -> calls.incrementAndGet(); error("Must use cache") },
           speech = SpeechRecognizer { _, _ -> calls.incrementAndGet(); error("Must use cache") })
@@ -158,7 +163,7 @@ class AutomaticTextAndCacheTest {
           assertNull(r.state.value.progressLabel); assertEquals(500L, r.state.value.offsetMs)
         } finally { main { r.close() }; db.close() }
       }
-    } finally { context.deleteDatabase(name) }
+    } finally { prefs.setSyncMode(previousMode); context.deleteDatabase(name) }
   }
 
   @Test fun boundedCurrentWorkFinishesHiddenAndSeekStartsNearNewPosition() = runBlocking {

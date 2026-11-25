@@ -3,7 +3,17 @@ package com.example.rivulet.data.lyrics
 /** Local sequence alignment of recognized words to the original book, never generated book text. */
 class NarrationMatcher(private val sentences: List<BookSentence>) {
   private data class Token(val value: String, val sentence: Int, val within: Int)
-  private val tokens = sentences.flatMapIndexed { index, sentence -> ReadAlongText.tokens(sentence.text).mapIndexed { within, word -> Token(word, index, within) } }
+
+  private val sentenceTokenCounts = IntArray(sentences.size)
+  private val sentenceFirstToken = IntArray(sentences.size) { -1 }
+  private val tokens: List<Token> = buildList {
+    sentences.forEachIndexed { index, sentence ->
+      val parsed = ReadAlongText.tokens(sentence.text)
+      sentenceTokenCounts[index] = parsed.size
+      if (parsed.isNotEmpty()) sentenceFirstToken[index] = size
+      parsed.forEachIndexed { within, word -> add(Token(word, index, within)) }
+    }
+  }
   private val trigrams = HashMap<String, MutableList<Int>>().apply {
     for (i in 0 until tokens.size - 2) getOrPut(key(tokens[i].value, tokens[i + 1].value, tokens[i + 2].value)) { ArrayList() }.add(i)
   }
@@ -14,34 +24,48 @@ class NarrationMatcher(private val sentences: List<BookSentence>) {
       parts.mapIndexed { i, text -> SpeechWord(text, word.startMs + (word.endMs - word.startMs) * i / parts.size, word.startMs + (word.endMs - word.startMs) * (i + 1) / parts.size) }
     }.filter { it.endMs > it.startMs }.take(400)
     if (words.size < 6 || tokens.isEmpty()) return emptyList()
-    // Repeated boilerplate alone cannot locate a passage without a chapter/previous-line anchor.
-    if (hintSentence == null && (0 until words.size - 2).none { i -> trigrams[key(words[i].text, words[i + 1].text, words[i + 2].text)]?.size == 1 }) return emptyList()
-    val votes = HashMap<Int, Int>()
-    for (i in 0 until words.size - 2) {
-      trigrams[key(words[i].text, words[i + 1].text, words[i + 2].text)]?.takeIf { it.size <= 30 }?.forEach { at ->
-        val bucket = Math.floorDiv(at - i, 20)
-        votes[bucket] = (votes[bucket] ?: 0) + 1
-      }
+
+    val preferred = hintSentence?.takeIf { it in sentences.indices }?.let { sentenceFirstToken[it] }?.takeIf { it >= 0 }
+
+    // Fast path: when anchored by an active/previous sentence, align locally first without scanning whole book trigrams.
+    val localBest = preferred?.let { center ->
+      alignWindow(words, (center - 100).coerceAtLeast(0), (center + words.size + 180).coerceAtMost(tokens.size), preferred)
     }
-    val candidates = votes.entries.sortedByDescending { it.value }.take(4).map { it.key * 20 }.toMutableList()
-    hintSentence?.let { hint -> tokens.indexOfFirst { it.sentence == hint }.takeIf { it >= 0 }?.let { candidates.add(0, it) } }
-    if (candidates.isEmpty()) return emptyList()
-    val preferred = hintSentence?.let { hint -> tokens.indexOfFirst { it.sentence == hint }.takeIf { it >= 0 } }
-    val best = candidates.map { center -> alignWindow(words, (center - 80).coerceAtLeast(0), (center + words.size + 120).coerceAtMost(tokens.size), preferred) }
-      .maxByOrNull { matches -> matches.size * 10_000 - (hintSentence?.let { hint -> matches.firstOrNull()?.let { kotlin.math.abs(tokens[it.second].sentence - hint) } } ?: 0) } ?: return emptyList()
+    val best = if (localBest != null && localBest.size >= maxOf(8, words.size / 3)) {
+      localBest
+    } else {
+      // Repeated boilerplate alone cannot locate a passage without a chapter/previous-line anchor.
+      if (hintSentence == null && (0 until words.size - 2).none { i -> trigrams[key(words[i].text, words[i + 1].text, words[i + 2].text)]?.size == 1 }) return emptyList()
+      val votes = HashMap<Int, Int>()
+      for (i in 0 until words.size - 2) {
+        trigrams[key(words[i].text, words[i + 1].text, words[i + 2].text)]?.takeIf { it.size <= 30 }?.forEach { at ->
+          val bucket = Math.floorDiv(at - i, 20)
+          votes[bucket] = (votes[bucket] ?: 0) + 1
+        }
+      }
+      val candidates = votes.entries.sortedByDescending { it.value }.take(4).map { it.key * 20 }.toMutableList()
+      preferred?.let { candidates.add(0, it) }
+      if (candidates.isEmpty()) return emptyList()
+      candidates.map { center ->
+        if (center == preferred && localBest != null) localBest
+        else alignWindow(words, (center - 80).coerceAtLeast(0), (center + words.size + 120).coerceAtMost(tokens.size), preferred)
+      }.maxByOrNull { matches ->
+        matches.size * 10_000 - (hintSentence?.let { hint -> matches.firstOrNull()?.let { kotlin.math.abs(tokens[it.second].sentence - hint) } } ?: 0)
+      } ?: return emptyList()
+    }
     if (best.size < 6) return emptyList()
     val groups = best.groupBy { tokens[it.second].sentence }
     fun complete(index: Int, pairs: List<Pair<Int, Int>>): Boolean {
-      val count = ReadAlongText.tokens(sentences[index].text).size
+      val count = sentenceTokenCounts[index]
       val covered = pairs.map { tokens[it.second].within }.toSet()
       return count >= 3 && 0 in covered && count - 1 in covered && covered.size.toDouble() / count >= 0.72
     }
     val confident = groups.filter { (index, pairs) -> complete(index, pairs) }.keys
     return groups.mapNotNull { (sentenceIndex, pairs) ->
-      val sentenceTokens = ReadAlongText.tokens(sentences[sentenceIndex].text)
+      val tokenCount = sentenceTokenCounts[sentenceIndex]
       val covered = pairs.map { tokens[it.second].within }.toSet()
       // Require the first word and most of the sentence; partial boundaries stay untimed.
-      val anchoredShort = sentenceTokens.size in 1..2 && covered.size == sentenceTokens.size && confident.any { neighbor ->
+      val anchoredShort = tokenCount in 1..2 && covered.size == tokenCount && confident.any { neighbor ->
         if (kotlin.math.abs(neighbor - sentenceIndex) != 1 || sentences[neighbor].chapterIndex != sentences[sentenceIndex].chapterIndex) false
         else {
           val adjacent = groups.getValue(neighbor)
