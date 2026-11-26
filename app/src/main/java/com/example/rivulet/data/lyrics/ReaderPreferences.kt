@@ -116,6 +116,9 @@ class ReaderPreferences(context: Context) {
   private val speechModelTierState = MutableStateFlow(SpeechModelTier.fromPersisted(preferences.getString("speech_model_tier", null)))
   val speechModelTier = speechModelTierState.asStateFlow()
 
+  private val annasSecretKeyState = MutableStateFlow(preferences.getString(KEY_ANNAS_SECRET, "").orEmpty())
+  val annasSecretKey = annasSecretKeyState.asStateFlow()
+
   fun setTextSize(value: Int) {
     val next = normalize(value)
     size.value = next
@@ -157,11 +160,25 @@ class ReaderPreferences(context: Context) {
     preferences.edit { putString("speech_model_tier", tier.name) }
   }
 
+  fun setAnnasSecretKey(key: String) {
+    val clean = key.trim()
+    annasSecretKeyState.value = clean
+    preferences.edit {
+      if (clean.isEmpty()) remove(KEY_ANNAS_SECRET) else putString(KEY_ANNAS_SECRET, clean)
+    }
+  }
+
   private inline fun <reified T : Enum<T>> enumOrDefault(raw: String?, default: T): T =
     raw?.let { name -> enumValues<T>().firstOrNull { it.name == name } } ?: default
 
   companion object {
     const val DEFAULT_SIZE = 18
+    private const val KEY_ANNAS_SECRET = "annas_secret_key"
     fun normalize(value: Int): Int = (value.coerceIn(14, 26) / 2) * 2
+    fun readAnnasSecretKey(context: Context): String? =
+      context.applicationContext.getSharedPreferences("readalong_reader", Context.MODE_PRIVATE)
+        .getString(KEY_ANNAS_SECRET, null)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
   }
 }

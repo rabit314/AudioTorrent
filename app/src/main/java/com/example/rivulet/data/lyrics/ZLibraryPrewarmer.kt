@@ -17,13 +17,14 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 /**
  * Headless WebView pre-warming service for Z-Library.
  *
- * Runs passively in the background to allow standard browser security checks
- * (`c_token`, `cf_clearance`, `diamwall`, etc.) to populate CookieManager before native OkHttp calls.
+ * Rotates quickly past stalled mirrors (`PER_MIRROR_TIMEOUT_MS`) so standard browser
+ * checks (`c_token`, `cf_clearance`, `DiamWall`) populate CookieManager before native OkHttp calls.
  */
 object ZLibraryPrewarmer {
   private const val TAG = "ZLibPrewarmer"
-  private const val COOLDOWN_MS = 20 * 60 * 1000L // 20 minutes cooldown once warmed
-  private const val TIMEOUT_MS = 22_000L
+  private const val COOLDOWN_MS = 20 * 60 * 1000L
+  private const val TIMEOUT_MS = 24_000L
+  private const val PER_MIRROR_TIMEOUT_MS = 7_000L
 
   private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
   private var isWarming = false
@@ -68,18 +69,19 @@ object ZLibraryPrewarmer {
 
   private var activePollRunnable: Runnable? = null
   private var activeTimeoutRunnable: Runnable? = null
+  private var activeMirrorTimer: Runnable? = null
 
   @SuppressLint("SetJavaScriptEnabled")
   private fun startHeadlessLoad(context: Context, targetUrl: String?) {
     val preferredOrigin = targetUrl?.let { raw ->
       runCatching { raw.toHttpUrl().let { "${it.scheme}://${it.host}" } }.getOrNull()
-    }
+    }?.takeIf { !it.contains("zlib.li", ignoreCase = true) }
     val candidates = (listOfNotNull(preferredOrigin) + ZLibraryClient.MIRRORS).distinct()
     var mirrorIdx = 0
 
     val timeoutRunnable = Runnable {
       Log.d(TAG, "Pre-warming timed out")
-      finish(hasClearanceCookie(targetUrl))
+      finish(hasStrongClearanceCookie(targetUrl))
     }
     activeTimeoutRunnable = timeoutRunnable
 
@@ -95,6 +97,21 @@ object ZLibraryPrewarmer {
 
     headlessWebView = webView
 
+    fun scheduleMirrorWatchdog(view: WebView) {
+      activeMirrorTimer?.let { mainHandler.removeCallbacks(it) }
+      val timer = Runnable {
+        if (!isWarming || headlessWebView !== view) return@Runnable
+        val nextIdx = ++mirrorIdx
+        if (nextIdx < candidates.size) {
+          Log.d(TAG, "Mirror ${candidates[nextIdx - 1]} stalled; switching to ${candidates[nextIdx]}")
+          scheduleMirrorWatchdog(view)
+          view.loadUrl(candidates[nextIdx])
+        }
+      }
+      activeMirrorTimer = timer
+      mainHandler.postDelayed(timer, PER_MIRROR_TIMEOUT_MS)
+    }
+
     fun evaluateReadiness(view: WebView, attempt: Int = 0) {
       if (!isWarming || headlessWebView !== view) return
       runCatching { CookieManager.getInstance().flush() }
@@ -108,11 +125,12 @@ object ZLibraryPrewarmer {
           arr.optString(0, "").lowercase() to arr.optBoolean(1, false)
         }.getOrDefault("" to false)
         val isChallenge = isChallengeTitle(title)
-        val hasCookie = hasClearanceCookie(view.url ?: targetUrl)
-        val ready = !isChallenge && title.isNotBlank() && (hasCookie || hasShell)
+        val hasStrongCookie = hasStrongClearanceCookie(view.url ?: targetUrl)
+        val ready = !isChallenge && title.isNotBlank() && (hasShell || hasStrongCookie)
         if (ready) {
           Log.d(TAG, "Pre-warming succeeded after $attempt polls (${view.url})")
           mainHandler.removeCallbacks(timeoutRunnable)
+          activeMirrorTimer?.let { mainHandler.removeCallbacks(it) }
           lastWarmedAt = System.currentTimeMillis()
           finish(true)
         } else if (attempt < 44) {
@@ -146,10 +164,12 @@ object ZLibraryPrewarmer {
         }
 
         override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
-          // Challenge responses (429/503/513) are expected while JS challenge scripts execute and reload.
           if (request.isForMainFrame && errorResponse.statusCode !in setOf(429, 503, 513) && errorResponse.statusCode >= 500) {
             val nextIdx = ++mirrorIdx
-            if (nextIdx < candidates.size) view.loadUrl(candidates[nextIdx])
+            if (nextIdx < candidates.size) {
+              scheduleMirrorWatchdog(view)
+              view.loadUrl(candidates[nextIdx])
+            }
           }
         }
 
@@ -157,15 +177,18 @@ object ZLibraryPrewarmer {
           if (!request.isForMainFrame) return
           val nextIdx = ++mirrorIdx
           if (nextIdx < candidates.size) {
+            scheduleMirrorWatchdog(view)
             view.loadUrl(candidates[nextIdx])
           } else {
             mainHandler.removeCallbacks(timeoutRunnable)
-            finish(hasClearanceCookie(targetUrl))
+            activeMirrorTimer?.let { mainHandler.removeCallbacks(it) }
+            finish(hasStrongClearanceCookie(targetUrl))
           }
         }
       }
 
       mainHandler.postDelayed(timeoutRunnable, TIMEOUT_MS)
+      scheduleMirrorWatchdog(webView)
       webView.loadUrl(candidates[mirrorIdx])
     } catch (t: Throwable) {
       Log.d(TAG, "Failed to start WebView load: ${t.message}")
@@ -180,7 +203,15 @@ object ZLibraryPrewarmer {
     urls.any { url -> hasClearanceToken(cm.getCookie(url)) }
   }.getOrDefault(false)
 
-  internal fun hasClearanceToken(cookie: String?): Boolean {
+  private fun hasStrongClearanceCookie(targetUrl: String? = null): Boolean = runCatching {
+    val cm = CookieManager.getInstance()
+    val urls = (listOfNotNull(targetUrl) + ZLibraryClient.MIRRORS).distinct()
+    urls.any { url -> hasTokenNamed(cm.getCookie(url), STRONG_CLEARANCE_COOKIE_NAMES) }
+  }.getOrDefault(false)
+
+  internal fun hasClearanceToken(cookie: String?): Boolean = hasTokenNamed(cookie, CLEARANCE_COOKIE_NAMES)
+
+  private fun hasTokenNamed(cookie: String?, allowedNames: Set<String>): Boolean {
     if (cookie.isNullOrBlank()) return false
     return cookie.split(';').any { part ->
       val eq = part.indexOf('=')
@@ -188,7 +219,7 @@ object ZLibraryPrewarmer {
       else {
         val name = part.substring(0, eq).trim()
         val value = part.substring(eq + 1).trim()
-        value.isNotEmpty() && name in CLEARANCE_COOKIE_NAMES
+        value.isNotEmpty() && name in allowedNames
       }
     }
   }
@@ -200,15 +231,20 @@ object ZLibraryPrewarmer {
       title.contains("verifying your browser") ||
       title.contains("wait a moment") ||
       title.contains("attention required") ||
+      title.contains("performing security verification") ||
+      title.contains("security verification") ||
       title.contains("diamwall") ||
       title.contains("ddos")
   }
 
-  private val CLEARANCE_COOKIE_NAMES = setOf("c_token", "cf_clearance", "remix_userkey", "diamwall")
+  private val STRONG_CLEARANCE_COOKIE_NAMES = setOf("c_token", "cf_clearance", "remix_userkey")
+  private val CLEARANCE_COOKIE_NAMES = STRONG_CLEARANCE_COOKIE_NAMES + setOf("diamwall", "__diamwall")
 
   private fun finish(success: Boolean) {
     activeTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
     activeTimeoutRunnable = null
+    activeMirrorTimer?.let { mainHandler.removeCallbacks(it) }
+    activeMirrorTimer = null
     activePollRunnable?.let { mainHandler.removeCallbacks(it) }
     activePollRunnable = null
     runCatching { CookieManager.getInstance().flush() }

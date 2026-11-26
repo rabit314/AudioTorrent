@@ -128,4 +128,7 @@ dependencies {
   // Network & HTML scraping
   implementation(libs.jsoup)
   implementation(libs.okhttp)
+
+  // On-device PDF text extraction
+  implementation(libs.pdfbox.android)
 }

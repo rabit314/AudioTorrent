@@ -42,7 +42,8 @@ class ReadAlongCoreTest {
   }
 
   @Test fun unsupportedAndOversizeImportsFailClearly() {
-    assertThrows(IllegalStateException::class.java) { BookImport.source("%PDF-1.4".toByteArray(), "book.pdf", "application/pdf") }
+    assertEquals(TextSyncSource.NARRATION, BookImport.source("%PDF-1.4".toByteArray(), "book.pdf", "application/pdf"))
+    assertThrows(IllegalStateException::class.java) { BookImport.source("AT&TFORM".toByteArray(), "book.djvu", "image/vnd.djvu") }
     assertThrows(IllegalArgumentException::class.java) { BookImport.read(ByteArray(10).inputStream(), 5) }
     assertThrows(IllegalArgumentException::class.java) { BookImport.read(ByteArray(0).inputStream()) }
   }
@@ -135,18 +136,22 @@ class ReadAlongCoreTest {
 
   @Test fun liveOctober2026CardShapeUsesSlotsAndIgnoresHiddenPromotions() {
     // Sanitized public markup inspected on zlib.li/s/Frankenstein on 2026-10-24.
-    val html = """<z-bookcard href="/book/xK8evYX2Dj/frankenstein.html" download="/dl/vBzZ3O5p2w" extension="epub" language="English"><div slot="title">Frankenstein</div><div slot="author">Mary Shelley</div></z-bookcard><div hidden><z-bookcard href="/book/hidden/fake" extension="epub"><div slot="title">Hidden promotion</div></z-bookcard></div><z-bookcard href="/book/pdf/other" extension="pdf"><div slot="title">PDF edition</div></z-bookcard>"""
+    val html = """<z-bookcard href="/book/xK8evYX2Dj/frankenstein.html" download="/dl/vBzZ3O5p2w" extension="epub" language="English"><div slot="title">Frankenstein</div><div slot="author">Mary Shelley</div></z-bookcard><div hidden><z-bookcard href="/book/hidden/fake" extension="epub"><div slot="title">Hidden promotion</div></z-bookcard></div><z-bookcard href="/book/pdf/other" extension="pdf"><div slot="title">PDF edition</div></z-bookcard><z-bookcard href="/book/azw3/skip" extension="azw3"><div slot="title">AZW3 edition</div></z-bookcard>"""
     val editions = ZLibraryClient.parseResults(html, ZLibraryClient.BASE)
-    assertEquals(1, editions.size)
+    assertEquals(2, editions.size)
     assertEquals("Frankenstein", editions.first().title)
     assertEquals("Mary Shelley", editions.first().author)
-    assertEquals("https://zlib.li/dl/vBzZ3O5p2w", editions.first().downloadUrl)
+    assertEquals("${ZLibraryClient.BASE}/dl/vBzZ3O5p2w", editions.first().downloadUrl)
+    assertEquals("PDF", editions[1].format)
   }
 
   @Test fun textProviderLabelsMatchUserFacingIntent() {
     assertEquals("Automatic (All Sources)", TextProvider.AUTOMATIC.label)
     assertEquals("Public Domain (Gutenberg)", TextProvider.GUTENBERG.label)
+    assertEquals("LibGen", TextProvider.LIBGEN.label)
     assertEquals("Z-Library", TextProvider.ZLIBRARY.label)
+    assertEquals("Anna's Archive", TextProvider.ANNAS_ARCHIVE.label)
+    assertEquals("WeLib", TextProvider.WELIB.label)
   }
 
   @Test fun zlibraryPrewarmerHandlesClearanceCheckSafely() {

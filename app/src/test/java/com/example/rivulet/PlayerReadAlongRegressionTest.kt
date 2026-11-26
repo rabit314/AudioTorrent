@@ -18,7 +18,7 @@ class PlayerReadAlongRegressionTest {
   @Test fun missingOrInvalidCoverDoesNotLoseEditionAndNormalUrlIsFallback() {
     assertNull(ZLibraryClient.parseResults(card(""), ZLibraryClient.BASE).single().coverUrl)
     assertNull(ZLibraryClient.parseResults(card("<img src='data:image/png;base64,abc'>"), ZLibraryClient.BASE).single().coverUrl)
-    assertEquals("https://zlib.li/real.jpg", ZLibraryClient.parseResults(card("<img data-src='javascript:alert(1)' src='/real.jpg'>"), ZLibraryClient.BASE).single().coverUrl)
+    assertEquals("${ZLibraryClient.BASE}/real.jpg", ZLibraryClient.parseResults(card("<img data-src='javascript:alert(1)' src='/real.jpg'>"), ZLibraryClient.BASE).single().coverUrl)
   }
 
   @Test fun trustworthyTimingsAndTranscriptsNeverOfferEstimation() {

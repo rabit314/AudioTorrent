@@ -72,28 +72,49 @@ class GutenbergClient : GutenbergCatalog {
   }
 }
 
-/** Automatic acquisition stops at usable Gutenberg candidates; manual filters can query either source. */
+/**
+ * Multi-source coordinator.
+ * - Zero-arg constructor enables all sources (`Gutenberg`, `LibGen`, `Z-Library`, `Anna's Archive`, `WeLib`).
+ * - Two-arg `(gutenberg, fallback)` preserves isolated unit-test behavior without invoking live secondary networks.
+ */
 class GutenbergFirstCatalog(
-  private val gutenberg: BookCatalog = GutenbergClient(),
-  private val fallback: BookCatalog = ZLibraryClient(
-    cookies = { url ->
-      runCatching {
-        android.webkit.CookieManager.getInstance().apply { setAcceptCookie(true) }.getCookie(url)
-      }.getOrNull()
-    },
-    saveCookies = { url, headers ->
-      runCatching {
-        val cm = android.webkit.CookieManager.getInstance()
-        cm.setAcceptCookie(true)
-        headers.forEach { header -> cm.setCookie(url, header) }
-        cm.flush()
-      }
-    },
-  ),
+  private val gutenberg: BookCatalog,
+  private val fallback: BookCatalog,
+  private val libgen: BookCatalog?,
+  private val annasArchive: BookCatalog?,
+  private val welib: BookCatalog?,
 ) : BookCatalog {
+
+  constructor() : this(
+    gutenberg = GutenbergClient(),
+    fallback = ZLibraryClient(),
+    libgen = LibGenClient(),
+    annasArchive = AnnasArchiveClient(),
+    welib = WeLibClient(),
+  )
+
+  constructor(
+    gutenberg: BookCatalog,
+    fallback: BookCatalog,
+  ) : this(
+    gutenberg = gutenberg,
+    fallback = fallback,
+    libgen = null,
+    annasArchive = null,
+    welib = null,
+  )
+
   override fun search(query: String): List<BookEdition> = lookup(BookLookupRequest(query)).editions
+
   override fun lookup(request: BookLookupRequest): BookLookupResult {
-    if (request.provider == TextProvider.ZLIBRARY) return fallback.lookup(request)
+    when (request.provider) {
+      TextProvider.ZLIBRARY -> return fallback.lookup(request)
+      TextProvider.LIBGEN -> return (libgen ?: throw IOException("LibGen is unavailable.")).lookup(request)
+      TextProvider.ANNAS_ARCHIVE -> return (annasArchive ?: throw IOException("Anna's Archive is unavailable.")).lookup(request)
+      TextProvider.WELIB -> return (welib ?: throw IOException("WeLib is unavailable.")).lookup(request)
+      TextProvider.GUTENBERG, TextProvider.AUTOMATIC -> Unit
+    }
+
     var publicBooks = emptyList<BookEdition>()
     var warning: String? = null
     fun suitable(edition: BookEdition): Boolean {
@@ -125,23 +146,65 @@ class GutenbergFirstCatalog(
         "Project Gutenberg is unavailable."
       }
     }
+
+    var libgenBooks = emptyList<BookEdition>()
+    var libgenError: Exception? = null
+    if (libgen != null) {
+      try {
+        libgenBooks = libgen.lookup(request).editions
+      } catch (error: Exception) {
+        if (error is java.util.concurrent.CancellationException) throw error
+        libgenError = error
+      }
+    }
+
     return try {
       val other = fallback.lookup(request)
+      val merged = BookSearch.rank(publicBooks + libgenBooks + other.editions, request.query, request.title, request.author)
       val combinedMessage = listOfNotNull(warning, other.message).distinct().joinToString(" ").ifBlank { null }
-      other.copy(editions = BookSearch.rank(publicBooks + other.editions, request.query, request.title, request.author), message = combinedMessage)
+      other.copy(editions = merged, message = combinedMessage)
     } catch (error: SiteAccessRequired) {
-      val combined = listOfNotNull(warning, "Z-Library needs a browser access check or login.").joinToString(" ")
-      BookLookupResult(publicBooks, combined, error.url, complete = false)
+      val combinedSoFar = BookSearch.rank(publicBooks + libgenBooks, request.query, request.title, request.author)
+      if (libgenBooks.isNotEmpty()) {
+        // LibGen already produced matches without triggering a browser verification wall.
+        BookLookupResult(combinedSoFar, warning, accessUrl = null, complete = true)
+      } else {
+        val combined = listOfNotNull(warning, "Z-Library needs a browser access check or login.").joinToString(" ")
+        BookLookupResult(combinedSoFar, combined, error.url, complete = false)
+      }
     } catch (error: Exception) {
       if (error is java.util.concurrent.CancellationException) throw error
-      val pgPrefix = warning?.let { "$it " }.orEmpty()
-      if (publicBooks.isEmpty()) throw IOException("${pgPrefix}Z-Library failed: ${error.message ?: "unavailable."}", error)
-      BookLookupResult(publicBooks, "Z-Library is unavailable. Showing Gutenberg results.", complete = false)
+      val combinedSoFar = BookSearch.rank(publicBooks + libgenBooks, request.query, request.title, request.author)
+      if (combinedSoFar.isEmpty()) {
+        val secondaryMsg = listOfNotNull(libgenError?.message, error.message).distinct().joinToString(" / ").ifBlank { "unavailable." }
+        val pgPrefix = warning?.let { "$it " }.orEmpty()
+        throw IOException("${pgPrefix}Book lookup failed: $secondaryMsg", error)
+      }
+      val statusNote = if (libgenBooks.isNotEmpty()) null else "Z-Library is unavailable. Showing Gutenberg results."
+      BookLookupResult(combinedSoFar, listOfNotNull(warning, statusNote).joinToString(" ").ifBlank { null }, complete = libgenBooks.isNotEmpty())
     }
   }
+
   override fun download(edition: BookEdition, renderedHtml: String?): Triple<ByteArray, String, String> = when (edition.provider) {
     TextProvider.GUTENBERG -> gutenberg.download(edition, null)
     TextProvider.ZLIBRARY -> fallback.download(edition, renderedHtml)
+    TextProvider.LIBGEN -> {
+      val client = libgen ?: error("LibGen is unavailable.")
+      try {
+        client.download(edition, renderedHtml)
+      } catch (error: Exception) {
+        if (error is java.util.concurrent.CancellationException || error is SiteAccessRequired) throw error
+        val md5 = LibGenClient.extractMd5(edition.providerId) ?: LibGenClient.extractMd5(edition.url)
+        val annas = annasArchive as? AnnasArchiveClient
+        if (md5 != null && annas != null) {
+          runCatching { annas.download(edition.copy(provider = TextProvider.ANNAS_ARCHIVE), null) }.getOrElse { throw error }
+        } else {
+          throw error
+        }
+      }
+    }
+    TextProvider.ANNAS_ARCHIVE -> (annasArchive ?: error("Anna's Archive is unavailable.")).download(edition, renderedHtml)
+    TextProvider.WELIB -> (welib ?: error("WeLib is unavailable.")).download(edition, renderedHtml)
     TextProvider.AUTOMATIC -> error("Choose a text edition first.")
   }
 }

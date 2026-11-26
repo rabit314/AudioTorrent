@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 data class ReaderSearchHit(
   val sentenceId: Long,
@@ -117,7 +118,10 @@ class ReadAlongRepository(
       }
     }
   }
-  init { context.applicationContext.registerComponentCallbacks(memoryCallbacks) }
+  init {
+    BookImport.init(context)
+    context.applicationContext.registerComponentCallbacks(memoryCallbacks)
+  }
 
   fun activate(track: ReadAlongTrack, initialPositionMs: Long = 0, initialDurationMs: Long = 0) {
     if (mutable.value.track == track) return
@@ -468,6 +472,8 @@ class ReadAlongRepository(
 
   private fun triggerPrewarmRetry(search: Lookup, targetUrl: String) {
     if (library !is GutenbergFirstCatalog && library !is ZLibraryClient) return
+    val targetHost = runCatching { targetUrl.toHttpUrl().host }.getOrNull().orEmpty()
+    if (!ZLibraryClient.isAllowedHost(targetHost)) return
     if (search.prewarmAttempted) return
     search.prewarmAttempted = true
     ZLibraryPrewarmer.warmUp(context, forceRefresh = true, targetUrl = targetUrl) { success ->
@@ -631,7 +637,9 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         if (current(track, version) && request == lookupSequence) {
           mutable.update { it.copy(searching = false, accessUrl = (error as? SiteAccessRequired)?.url, lookupMessage = error.message) }
-          if (error is SiteAccessRequired && !prewarmed && (library is GutenbergFirstCatalog || library is ZLibraryClient)) {
+          if (error is SiteAccessRequired && !prewarmed && (library is GutenbergFirstCatalog || library is ZLibraryClient) &&
+            runCatching { ZLibraryClient.isAllowedHost(error.url.toHttpUrl().host) }.getOrDefault(false)
+          ) {
             ZLibraryPrewarmer.warmUp(context, forceRefresh = true, targetUrl = edition.url) { success ->
               if (success && current(track, version) && request == lookupSequence && mutable.value.accessUrl != null) {
                 mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Site access verified. Downloading…") }
@@ -650,16 +658,27 @@ class ReadAlongRepository(
     if (expectedTrack != mutable.value.track) return
     val download = pendingDownload
     if (download != null && current(download.track, download.version)) {
-      // A login flow can finish on a different page. Re-fetch the edition unless this is its page or carries a /dl/ link.
-      val editionPage = url.substringBefore('?').trimEnd('/') == download.edition.url.substringBefore('?').trimEnd('/') ||
-        html.contains("/dl/", ignoreCase = true) || html.contains("/download/", ignoreCase = true)
+      val editionPage = CatalogDownloadBridge.isDownloadCapture(html) ||
+        url.substringBefore('?').trimEnd('/') == download.edition.url.substringBefore('?').trimEnd('/') ||
+        html.contains("/dl/", ignoreCase = true) ||
+        html.contains("/download/", ignoreCase = true) ||
+        html.contains("/slow_download/", ignoreCase = true) ||
+        html.contains("/fast_download/", ignoreCase = true) ||
+        html.contains("/auto_download/", ignoreCase = true) ||
+        html.contains("get.php", ignoreCase = true)
       downloadEdition(download.edition, download.indices, html.takeIf { editionPage })
     } else {
       val search = lookup ?: return
       if (!lookupCurrent(search)) return
-      if (url.contains("/s/") || html.contains("<z-bookcard", ignoreCase = true) || html.contains("resItemBox", ignoreCase = true)) {
+      val hasCards = html.contains("<z-bookcard", ignoreCase = true) ||
+        html.contains("resItemBox", ignoreCase = true) ||
+        html.contains("book-card", ignoreCase = true) ||
+        html.contains("js-aarecord-list-outer", ignoreCase = true) ||
+        html.contains("tablelibgen", ignoreCase = true)
+      val isSearchPage = url.contains("/s/") || url.contains("/search") || url.contains("index.php")
+      if (isSearchPage || hasCards) {
         acceptRenderedSearch(html, url, expectedTrack)
-      } else if (ZLibraryClient.needsAccess(200, html)) {
+      } else if (needsBrowserChallenge(url, html)) {
         mutable.update { it.copy(accessUrl = url, searching = false, lookupMessage = "Complete the browser verification or sign in to continue.") }
       } else {
         mutable.update { it.copy(accessUrl = null, searching = true) }
@@ -668,12 +687,31 @@ class ReadAlongRepository(
     }
   }
 
+  private fun needsBrowserChallenge(url: String, html: String): Boolean {
+    val host = runCatching { url.toHttpUrl().host }.getOrNull().orEmpty()
+    return when {
+      WeLibClient.isAllowedHost(host) -> WeLibClient.needsAccess(200, html)
+      AnnasArchiveClient.isAllowedHost(host) -> AnnasArchiveClient.needsAccess(200, html)
+      LibGenClient.isAllowedHost(host) -> CatalogHttpHelpers.isChallengeHtml(200, html)
+      else -> ZLibraryClient.needsAccess(200, html)
+    }
+  }
+
   fun acceptRenderedSearch(html: String, url: String, expectedTrack: ReadAlongTrack? = mutable.value.track) {
     if (expectedTrack != mutable.value.track) return
     val search = lookup ?: return
     if (!lookupCurrent(search)) return
-    val zResults = ZLibraryClient.parseResults(html, url)
-    if (zResults.isEmpty() && ZLibraryClient.needsAccess(200, html)) {
+    val host = runCatching { url.toHttpUrl().host }.getOrNull().orEmpty()
+    val renderedResults = when {
+      WeLibClient.isAllowedHost(host) || html.contains("id=\"aarecord-list\"", ignoreCase = true) ->
+        WeLibClient.parseResults(html, url)
+      AnnasArchiveClient.isAllowedHost(host) || html.contains("js-aarecord-list-outer", ignoreCase = true) ->
+        AnnasArchiveClient.parseResults(html, url)
+      LibGenClient.isAllowedHost(host) || html.contains("id=\"tablelibgen\"", ignoreCase = true) ->
+        LibGenClient.parseResults(html, url)
+      else -> ZLibraryClient.parseResults(html, url)
+    }
+    if (renderedResults.isEmpty() && needsBrowserChallenge(url, html)) {
       mutable.update {
         it.copy(
           searching = false,
@@ -683,7 +721,10 @@ class ReadAlongRepository(
       }
       return
     }
-    val parsed = searchResults.filter { it.provider == TextProvider.GUTENBERG } + zResults
+    val retained = if (search.provider == TextProvider.AUTOMATIC) {
+      searchResults.filter { it.provider in setOf(TextProvider.GUTENBERG, TextProvider.LIBGEN) }
+    } else emptyList()
+    val parsed = retained + renderedResults
     if (shouldBroaden(search, parsed)) {
       search.titleOnly = true
       mutable.update { it.copy(accessUrl = null, searching = true, lookupMessage = "Trying the book title without the author…") }

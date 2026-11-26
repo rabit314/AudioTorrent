@@ -89,6 +89,7 @@ fun LyricsView(
   val syncMode by repository.readerPreferences.syncMode.collectAsStateWithLifecycle()
   val autoGenerateScript by repository.readerPreferences.autoGenerateScript.collectAsStateWithLifecycle()
   val speechModelTier by repository.readerPreferences.speechModelTier.collectAsStateWithLifecycle()
+  val savedAnnasKey by repository.readerPreferences.annasSecretKey.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
 
@@ -128,6 +129,7 @@ fun LyricsView(
   var showSyncSheet by rememberSaveable { mutableStateOf(false) }
   var showBookNav by rememberSaveable { mutableStateOf(false) }
   var showAccess by remember(state.track) { mutableStateOf(false) }
+  var autoOpenInteractiveAccess by remember(state.track) { mutableStateOf(false) }
   var showReplaceScriptConfirm by remember(state.track) { mutableStateOf(false) }
   var exportFullBookMode by remember { mutableStateOf(false) }
   var hasMultiChapterScripts by remember { mutableStateOf(false) }
@@ -173,10 +175,17 @@ fun LyricsView(
   }
   val importFile = {
     pickedFor = state.track; pickedTracks = selectedTracks
-    picker.launch(arrayOf("application/epub+zip", "text/*", "application/x-subrip", "application/octet-stream"))
+    picker.launch(arrayOf("application/epub+zip", "application/pdf", "text/*", "application/x-subrip", "application/octet-stream"))
   }
-  fun search() = repository.searchBooks(query, title = if (query == suggestedQuery) cleanBookTitle else query,
-    author = if (query == suggestedQuery) searchAuthor else "", provider = textProvider)
+  fun search() {
+    autoOpenInteractiveAccess = textProvider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE)
+    repository.searchBooks(
+      query,
+      title = if (query == suggestedQuery) cleanBookTitle else query,
+      author = if (query == suggestedQuery) searchAuthor else "",
+      provider = textProvider,
+    )
+  }
   val findText = { showSearch = true; search() }
   val startScriptGeneration = {
     showSearch = false
@@ -231,6 +240,12 @@ fun LyricsView(
     }
   }
   LaunchedEffect(state.choosingEdition) { if (state.choosingEdition) showSearch = true }
+  LaunchedEffect(state.accessUrl, autoOpenInteractiveAccess) {
+    if (state.accessUrl != null && autoOpenInteractiveAccess && isVisible) {
+      autoOpenInteractiveAccess = false
+      showAccess = true
+    }
+  }
   LaunchedEffect(state.bookId, state.trackIndices) { if (state.trackIndices.isNotEmpty()) selectedTracks = state.trackIndices }
   LaunchedEffect(dragged) { if (dragged) following = false }
   LaunchedEffect(state.correction.phase, state.correction.event) {
@@ -356,7 +371,7 @@ fun LyricsView(
               text = { Text(if (state.bookId == null) "Find book text" else if (state.isScriptSource) "Replace with ebook" else "Replace edition") },
               onClick = { showOptions = false; findText() },
             )
-            DropdownMenuItem(text = { Text("Import EPUB / TXT / LRC / SRT") }, onClick = { showOptions = false; importFile() })
+            DropdownMenuItem(text = { Text("Import EPUB / PDF / TXT / FB2") }, onClick = { showOptions = false; importFile() })
             if (!state.isScriptSource) {
               DropdownMenuItem(
                 text = { Text("Generate script from audio") },
@@ -506,6 +521,26 @@ fun LyricsView(
       Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         TextProvider.entries.forEach { provider -> FilterChip(textProvider == provider, { textProvider = provider; search() }, label = { Text(provider.label) }) }
       }
+      if (textProvider == TextProvider.ANNAS_ARCHIVE) {
+        var keyDraft by remember(savedAnnasKey) { mutableStateOf(savedAnnasKey) }
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          OutlinedTextField(
+            value = keyDraft,
+            onValueChange = { keyDraft = it },
+            label = { Text("Optional Anna's member key") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.weight(1f),
+          )
+          TextButton(onClick = { repository.readerPreferences.setAnnasSecretKey(keyDraft) }) {
+            Text(if (keyDraft.isBlank()) "Clear" else "Save")
+          }
+        }
+      }
       TextButton(onClick = { search() }) { Text("Search") }
       ReadAlongStatus(
         state,
@@ -522,8 +557,15 @@ fun LyricsView(
         }
       }
       LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
-        items(state.editions, key = { it.url }) { edition ->
-          BookEditionRow(edition, onSelect = { repository.downloadEdition(edition, selectedTracks) }, enabled = !state.searching)
+        items(state.editions, key = { "${it.provider.name}:${it.url}" }) { edition ->
+          BookEditionRow(
+            edition = edition,
+            onSelect = {
+              autoOpenInteractiveAccess = edition.provider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE)
+              repository.downloadEdition(edition, selectedTracks)
+            },
+            enabled = !state.searching,
+          )
         }
       }
     } }, confirmButton = { TextButton(onClick = { showSearch = false; if (state.bookId != null) repository.dismissLookupStatus() }) { Text("Done") } },
@@ -655,10 +697,15 @@ fun LyricsView(
     )
   }
   if (showAccess && isVisible) state.accessUrl?.let { url ->
-    ZLibraryAccessDialog(url, onDismiss = { showAccess = false }, onReady = { html, loadedUrl ->
-      showAccess = false
-      repository.resumeSiteAccess(html, loadedUrl, state.track)
-    })
+    SiteAccessDialog(
+      url = url,
+      onDismiss = { showAccess = false },
+      onReady = { html, loadedUrl ->
+        showAccess = false
+        repository.resumeSiteAccess(html, loadedUrl, state.track)
+      },
+      onImportLocalFile = importFile,
+    )
   }
 }
 

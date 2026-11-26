@@ -69,7 +69,7 @@ class PlayerRepositoryRegressionTest {
       withContext(Dispatchers.Main) {
         repository.acceptRenderedSearch("<z-bookcard title='Example' href='/book/1'><img src='/cover.jpg'></z-bookcard>", ZLibraryClient.BASE)
       }
-      assertEquals("https://zlib.li/cover.jpg", repository.state.value.editions.single().coverUrl)
+      assertEquals("${ZLibraryClient.BASE}/cover.jpg", repository.state.value.editions.single().coverUrl)
     } finally { gate.countDown(); withContext(Dispatchers.Main) { repository.close() }; database.close(); context.deleteDatabase(name) }
   }
 

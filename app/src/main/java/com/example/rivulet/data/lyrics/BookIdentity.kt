@@ -102,9 +102,17 @@ object BookSearch {
     return editions.distinctBy { it.provider to it.catalogKey }.sortedByDescending { edition ->
       val found = tokens(edition.title)
       val overlap = wanted.intersect(found).size
+      val formatBonus = when (edition.format.trim().uppercase()) {
+        "EPUB" -> 12
+        "TXT" -> 9
+        "FB2" -> 6
+        "PDF" -> 2
+        else -> 0
+      }
       (if (found == wanted) 1000 else 0) + (if (wanted.isNotEmpty() && found.containsAll(wanted)) 300 else 0) +
         (if (wanted.isEmpty()) 0 else 200 * overlap / wanted.size) - (found - wanted).size.coerceAtMost(30) +
         authorTokens.intersect(tokens(edition.author)).size * 20 + (if (edition.language.lowercase() in setOf("english", "en", "eng")) 5 else 0) +
+        formatBonus +
         (if (edition.provider == TextProvider.GUTENBERG) 1 else 0)
     }
   }

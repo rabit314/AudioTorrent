@@ -140,6 +140,15 @@ class PlaybackController(
     com.example.rivulet.data.lyrics.AudioWindowDecoder { track ->
       analysisDataSource?.invoke(track) ?: error("Audio analysis is not configured.")
     },
+    library = com.example.rivulet.data.lyrics.GutenbergFirstCatalog(
+      gutenberg = com.example.rivulet.data.lyrics.GutenbergClient(),
+      fallback = com.example.rivulet.data.lyrics.ZLibraryClient(),
+      libgen = com.example.rivulet.data.lyrics.LibGenClient(),
+      annasArchive = com.example.rivulet.data.lyrics.AnnasArchiveClient(
+        secretKey = { com.example.rivulet.data.lyrics.ReaderPreferences.readAnnasSecretKey(context) },
+      ),
+      welib = com.example.rivulet.data.lyrics.WeLibClient(),
+    ),
   )
 
   init {
