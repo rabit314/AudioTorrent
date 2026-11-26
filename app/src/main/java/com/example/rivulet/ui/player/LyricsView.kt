@@ -129,7 +129,8 @@ fun LyricsView(
   var showSyncSheet by rememberSaveable { mutableStateOf(false) }
   var showBookNav by rememberSaveable { mutableStateOf(false) }
   var showAccess by remember(state.track) { mutableStateOf(false) }
-  var autoOpenInteractiveAccess by remember(state.track) { mutableStateOf(false) }
+  var interactiveAccessNonce by remember(state.track) { mutableIntStateOf(0) }
+  var handledInteractiveAccessNonce by remember(state.track) { mutableIntStateOf(0) }
   var showReplaceScriptConfirm by remember(state.track) { mutableStateOf(false) }
   var exportFullBookMode by remember { mutableStateOf(false) }
   var hasMultiChapterScripts by remember { mutableStateOf(false) }
@@ -178,7 +179,9 @@ fun LyricsView(
     picker.launch(arrayOf("application/epub+zip", "application/pdf", "text/*", "application/x-subrip", "application/octet-stream"))
   }
   fun search() {
-    autoOpenInteractiveAccess = textProvider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE)
+    if (textProvider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE, TextProvider.ZLIBRARY)) {
+      interactiveAccessNonce++
+    }
     repository.searchBooks(
       query,
       title = if (query == suggestedQuery) cleanBookTitle else query,
@@ -240,9 +243,9 @@ fun LyricsView(
     }
   }
   LaunchedEffect(state.choosingEdition) { if (state.choosingEdition) showSearch = true }
-  LaunchedEffect(state.accessUrl, autoOpenInteractiveAccess) {
-    if (state.accessUrl != null && autoOpenInteractiveAccess && isVisible) {
-      autoOpenInteractiveAccess = false
+  LaunchedEffect(state.accessUrl, interactiveAccessNonce) {
+    if (state.accessUrl != null && isVisible && interactiveAccessNonce > handledInteractiveAccessNonce) {
+      handledInteractiveAccessNonce = interactiveAccessNonce
       showAccess = true
     }
   }
@@ -561,7 +564,9 @@ fun LyricsView(
           BookEditionRow(
             edition = edition,
             onSelect = {
-              autoOpenInteractiveAccess = edition.provider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE)
+              if (edition.provider in setOf(TextProvider.WELIB, TextProvider.ANNAS_ARCHIVE, TextProvider.ZLIBRARY)) {
+                interactiveAccessNonce++
+              }
               repository.downloadEdition(edition, selectedTracks)
             },
             enabled = !state.searching,

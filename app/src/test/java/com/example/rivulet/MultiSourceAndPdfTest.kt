@@ -80,6 +80,48 @@ class MultiSourceAndPdfTest {
     assertEquals("PDF", results[1].format)
   }
 
+  @Test fun libgenParsesLiveTenColumnTableWithCoverHeaderCorrectly() {
+    val html = """
+      <table id="tablelibgen">
+        <thead><tr>
+          <th scope="col"></th>
+          <th scope="col" class="first_col">ID Time add. Title Series</th>
+          <th scope="col">Author(s)</th>
+          <th scope="col">Publisher</th>
+          <th scope="col">Year</th>
+          <th scope="col">Language</th>
+          <th scope="col">Pages</th>
+          <th scope="col">Size</th>
+          <th scope="col">Ext.</th>
+          <th scope="col">Mirrors</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><a href="edition.php?id=149658933"><img src="/covers/6117000/11e4dbb395b3dfe50af6a199375705c1_small.jpg"></a></td>
+            <td><a href="edition.php?id=149658933">The Caves of Steel</a></td>
+            <td>Isaac Asimov</td>
+            <td></td>
+            <td>2010</td>
+            <td>English</td>
+            <td>224</td>
+            <td><a href="/file.php?id=106971511">281 kB</a></td>
+            <td>epub</td>
+            <td><a href="/ads.php?md5=11e4dbb395b3dfe50af6a199375705c1">1</a></td>
+          </tr>
+        </tbody>
+      </table>
+    """.trimIndent()
+
+    val results = LibGenClient.parseResults(html, "https://libgen.li/index.php?req=Caves+of+Steel")
+    assertEquals(1, results.size)
+    val item = results.single()
+    assertEquals("The Caves of Steel", item.title)
+    assertEquals("Isaac Asimov", item.author)
+    assertEquals("English", item.language)
+    assertEquals("EPUB", item.format)
+    assertEquals("11e4dbb395b3dfe50af6a199375705c1", item.providerId)
+  }
+
   @Test fun libgenExtractsGetLinkAndDetectsDbBusy500() {
     val adsHtml = """<table id="main"><tr><td><a href="get.php?md5=a5347daf5676bb9344812b5dee5a760b&key=KEY123"><h2>GET</h2></a></td></tr></table>"""
     assertEquals(
@@ -134,13 +176,33 @@ class MultiSourceAndPdfTest {
       <div id="md5-panel-downloads">
         <a href="/fast_download/024c0b8c27b919a25be0b9303f050405/0/0">Fast</a>
         <a href="/slow_download/024c0b8c27b919a25be0b9303f050405/0/0">Slow</a>
+        <span class="preview" data-book-url="/fast_preview/f4276438c8c994e5c43300c6b4df0cb2/0/0?viewer=1">Read</span>
       </div>
     """.trimIndent()
     assertEquals(
       "https://welib.gl/slow_download/024c0b8c27b919a25be0b9303f050405/0/0",
       WeLibClient.extractDownloadLink(detailHtml, "https://welib.gl/md5/024c0b8c27b919a25be0b9303f050405"),
     )
+    assertEquals(
+      "https://welib.gl/fast_preview/f4276438c8c994e5c43300c6b4df0cb2/0/0?viewer=1",
+      WeLibClient.extractFastPreviewUrl(detailHtml, "https://welib.gl/md5/f4276438c8c994e5c43300c6b4df0cb2"),
+    )
+
+    val previewHtml = """
+      <p><a href="/fast_view?url=https%3A//y-cdn-y.com/hs7/zlib3/f4276438c8c994e5c43300c6b4df0cb2/book.epub&amp;md5=f4276438c8c994e5c43300c6b4df0cb2">View</a></p>
+      <img src="https://y-cdn-y.com/covers/proxy?url=cover.jpg">
+    """.trimIndent()
+    assertEquals(
+      "https://y-cdn-y.com/hs7/zlib3/f4276438c8c994e5c43300c6b4df0cb2/book.epub",
+      WeLibClient.extractPreviewFileUrl(previewHtml, "https://welib.gl/fast_preview/f4276438c8c994e5c43300c6b4df0cb2/0/0?viewer=1"),
+    )
+    assertNull(
+      WeLibClient.extractFileUrlFromViewerSrc("https://welib.gl/fast_view?url=https%3A//img.y-cdn-y.com/covers/proxy%3Fkey%3D1"),
+    )
+
     assertTrue(WeLibClient.needsAccess(403, "<title>Just a moment...</title>"))
+    assertTrue(WeLibClient.needsAccess(200, "<html><head><title>Verify you are human by completing the action below. - WeLib</title></head><body><form id=\"captcha-form\"><div class=\"h-captcha\"></div></form></body></html>"))
+    assertTrue(ZLibraryPrewarmer.isChallengeTitle("Verify you are human by completing the action below. - WeLib"))
   }
 
   @Test fun annasArchiveParsesVerifiedSearchCardsAndChallengeDetection() {

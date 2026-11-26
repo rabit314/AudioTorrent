@@ -74,7 +74,7 @@ val APP_CHANGELOG = listOf(
       "System-wide Material 3 theme engine (Black & Blue, Kindle Paper, Warm Sepia, Soft Sage, OLED Midnight) with adaptive light/dark system bars.",
       "Swipe-first Cover/Text player, streamlined single-row reader header with T-settings menu, and unified Correct sync tools.",
       "On-device Whisper Read-Along matching across Gutenberg, LibriVox, Z-Library, and EPUB/TXT/LRC/SRT files with lean SQLite timing storage and gap interpolation.",
-      "4 charger-independent sync horizons (Playhead, Balanced +3m, Extended +15m, Full track) plus clickable sync coverage breakdown.",
+      "4 charger-independent sync horizons (Playhead 1m/40s, Balanced 5m/3m, Extended 15m/10m, Full track) plus clickable sync coverage breakdown.",
       "Chapter TOC search, quote bookmarks, per-book playback speed memory, and major idle CPU & thermal reductions.",
     ),
   ),

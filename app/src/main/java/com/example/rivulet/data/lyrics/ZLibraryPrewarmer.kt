@@ -229,6 +229,8 @@ object ZLibraryPrewarmer {
     return title.contains("just a moment") ||
       title.contains("checking your browser") ||
       title.contains("verifying your browser") ||
+      title.contains("verify you are human") ||
+      title.contains("verify you're human") ||
       title.contains("wait a moment") ||
       title.contains("attention required") ||
       title.contains("performing security verification") ||

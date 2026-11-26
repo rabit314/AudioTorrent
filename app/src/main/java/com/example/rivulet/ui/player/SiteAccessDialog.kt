@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -75,7 +76,21 @@ fun SiteAccessDialog(
         Boolean(document.querySelector('input[type=password]')),
         Boolean(document.querySelector('z-bookcard, .resItemBox, .bookRow, a[href*="/dl/"], a[href*="/download/"], #tablelibgen a[href*="ads.php"], a[href*="get.php"], #aarecord-list .book-card a[href*="/md5/"], .js-aarecord-list-outer a[href*="/md5/"]')),
         Boolean(/no (books|matches|results)|nothing found/i.test((document.body && document.body.innerText) || '')),
-        Boolean(document.querySelector('#md5-panel-downloads, a[href*="/slow_download/"], a[href*="/fast_download/"]'))
+        Boolean(document.querySelector('#md5-panel-downloads, a[href*="/slow_download/"], a[href*="/fast_download/"]')),
+        (function() {
+          var docs = [document];
+          var bf = document.querySelector('iframe#bookIframe');
+          try { if (bf && bf.contentDocument) docs.push(bf.contentDocument); } catch (e) {}
+          for (var i = 0; i < docs.length; i++) {
+            var d = docs[i];
+            var f = d.querySelector('iframe#foliate-iframe');
+            if (f && f.src) return f.src;
+            var a = d.querySelector('a[href*="/fast_view"]');
+            if (a && a.href) return a.href;
+          }
+          if (bf && bf.src && bf.src.indexOf('url=') !== -1) return bf.src;
+          return '';
+        })()
       ])
     """.trimIndent()
 
@@ -83,7 +98,7 @@ fun SiteAccessDialog(
       if (completed) return@evaluateJavascript
       val probe = runCatching {
         val unquoted = org.json.JSONArray("[$raw]")
-        if (unquoted.isNull(0)) return@runCatching SiteProbe("", false, false, false, false)
+        if (unquoted.isNull(0)) return@runCatching SiteProbe("", false, false, false, false, "")
         val arr = org.json.JSONArray(unquoted.getString(0))
         SiteProbe(
           title = arr.optString(0, ""),
@@ -91,13 +106,30 @@ fun SiteAccessDialog(
           hasContent = arr.optBoolean(2, false),
           hasNoResults = arr.optBoolean(3, false),
           isDetailDownloadPage = arr.optBoolean(4, false),
+          viewerSrc = arr.optString(5, ""),
         )
-      }.getOrDefault(SiteProbe("", false, false, false, false))
+      }.getOrDefault(SiteProbe("", false, false, false, false, ""))
 
       val inChallenge = ZLibraryPrewarmer.isChallengeTitle(probe.title)
       loading = inChallenge
       canGoBack = view.canGoBack()
       if (inChallenge || probe.hasPassword) return@evaluateJavascript
+
+      // When tapping "Read" on WeLib, intercept the Foliate/fast_view CDN book URL directly into Rivulet.
+      if (isWeLib && probe.viewerSrc.isNotBlank()) {
+        val previewBookUrl = WeLibClient.extractFileUrlFromViewerSrc(probe.viewerSrc)
+        if (previewBookUrl != null) {
+          CookieManager.getInstance().flush()
+          completed = true
+          val encoded = CatalogDownloadBridge.encode(
+            downloadUrl = previewBookUrl,
+            referer = currentUrl,
+            userAgent = CatalogHttpHelpers.DEFAULT_USER_AGENT,
+          )
+          ready(encoded, currentUrl)
+          return@evaluateJavascript
+        }
+      }
 
       val parsedCurrent = runCatching { currentUrl.toHttpUrl() }.getOrNull()
       val parsedTarget = runCatching { url.toHttpUrl() }.getOrNull()
@@ -198,7 +230,16 @@ fun SiteAccessDialog(
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             settings.userAgentString = CatalogHttpHelpers.DEFAULT_USER_AGENT
             resumeTimers()
-            CookieManager.getInstance().setAcceptCookie(true)
+            val targetWebView = this
+            CookieManager.getInstance().apply {
+              setAcceptCookie(true)
+              setAcceptThirdPartyCookies(targetWebView, true)
+            }
+            webChromeClient = object : WebChromeClient() {
+              override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                if (!completed && newProgress < 100) loading = true
+              }
+            }
             setDownloadListener { downloadUrl, userAgent, contentDisposition, mimeType, _ ->
               if (!completed && runCatching { CatalogHttpHelpers.validateHttpsUrl(downloadUrl) }.isSuccess) {
                 CookieManager.getInstance().flush()
@@ -215,11 +256,17 @@ fun SiteAccessDialog(
               }
             }
             webViewClient = object : WebViewClient() {
-              override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                runCatching {
-                  CatalogHttpHelpers.validateHttpsUrl(request.url.toString())
+              override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val target = request.url.toString()
+                if (!request.isForMainFrame) {
+                  val scheme = request.url.scheme?.lowercase()
+                  return scheme !in setOf("https", "about", "data", "blob")
+                }
+                return runCatching {
+                  CatalogHttpHelpers.validateHttpsUrl(target)
                   false
                 }.getOrDefault(true)
+              }
 
               override fun onPageFinished(view: WebView, loadedUrl: String) {
                 canGoBack = view.canGoBack()
@@ -240,4 +287,5 @@ private data class SiteProbe(
   val hasContent: Boolean,
   val hasNoResults: Boolean,
   val isDetailDownloadPage: Boolean,
+  val viewerSrc: String,
 )

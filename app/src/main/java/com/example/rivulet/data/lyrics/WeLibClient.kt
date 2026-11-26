@@ -64,8 +64,51 @@ class WeLibClient(
       renderedHtml
     } else null
 
+    // Prefer fast_preview / Foliate public server URLs when available (no waitlist or CAPTCHA).
+    if (html != null) {
+      extractPreviewFileUrl(html, edition.url)?.let { directPreview ->
+        runCatching {
+          return CatalogHttpHelpers.downloadBinaryFile(
+            client = client,
+            url = directPreview,
+            edition = edition,
+            referer = edition.url,
+            siteName = "WeLib",
+            isAccessRequired = ::needsAccess,
+            accessFallbackUrl = edition.url,
+          )
+        }.onFailure { if (it is java.util.concurrent.CancellationException) throw it }
+      }
+    }
+
+    val md5 = LibGenClient.extractMd5(edition.providerId) ?: LibGenClient.extractMd5(edition.url)
+    val previewEndpoint = html?.let { extractFastPreviewUrl(it, edition.url) }
+      ?: md5?.let { hash ->
+        val origin = runCatching {
+          edition.url.toHttpUrl().let { u -> "${u.scheme}://${u.host}" }
+        }.getOrDefault(preferredBase)
+        buildFastPreviewUrl(origin, hash)
+      }
+    if (previewEndpoint != null) {
+      runCatching {
+        val (previewHtml, previewResolvedUrl) = page(previewEndpoint, referer = edition.url)
+        extractPreviewFileUrl(previewHtml, previewResolvedUrl)?.let { directFileUrl ->
+          return CatalogHttpHelpers.downloadBinaryFile(
+            client = client,
+            url = directFileUrl,
+            edition = edition,
+            referer = previewResolvedUrl,
+            siteName = "WeLib",
+            isAccessRequired = ::needsAccess,
+            accessFallbackUrl = edition.url,
+          )
+        }
+      }.onFailure { if (it is java.util.concurrent.CancellationException) throw it }
+    }
+
     val downloadTarget = if (html != null) {
-      extractDownloadLink(html, edition.url) ?: throw SiteAccessRequired(edition.url, "Tap Slow download in the WeLib browser to download.")
+      extractDownloadLink(html, edition.url)
+        ?: throw SiteAccessRequired(edition.url, "Tap Read or Slow download in the WeLib browser to download.")
     } else {
       val (detailHtml, resolvedUrl) = page(edition.url)
       extractDownloadLink(detailHtml, resolvedUrl)
@@ -90,7 +133,11 @@ class WeLibClient(
       val body = response.body ?: throw IOException("WeLib returned an empty response.")
       val html = body.byteStream().use { BookImport.read(it, 4 * 1024 * 1024) }.toString(Charsets.UTF_8)
       val finalUrl = response.request.url.toString()
-      if (needsAccess(response.code, html)) throw SiteAccessRequired(finalUrl, "WeLib needs browser verification in the in-app browser.")
+      if (needsAccess(response.code, html)) {
+        // Keep the requested search/edition URL when redirected to /verify_captcha so WebView gets a fresh session redirect.
+        val accessTarget = if (finalUrl.contains("/verify_captcha", ignoreCase = true)) url else finalUrl
+        throw SiteAccessRequired(accessTarget, "WeLib needs browser verification in the in-app browser.")
+      }
       check(response.isSuccessful) { "WeLib is unavailable (${response.code})." }
       return html to finalUrl
     }
@@ -115,7 +162,48 @@ class WeLibClient(
       val hasCards = doc.selectFirst("#aarecord-list .book-card, #md5-panel-downloads a[href*=_download/]") != null
       val bodyText = doc.body().text().lowercase(Locale.ROOT)
       return !hasCards && (bodyText.contains("waitlist") || bodyText.contains("checking your browser") ||
-        bodyText.contains("security verification") || doc.selectFirst("input[type=password]") != null)
+        bodyText.contains("verify you are human") || bodyText.contains("security verification") ||
+        doc.selectFirst("input[type=password], #captcha-form, .h-captcha") != null)
+    }
+
+    fun buildFastPreviewUrl(origin: String, md5: String): String =
+      "${origin.trimEnd('/')}/fast_preview/$md5/0/0?viewer=1"
+
+    fun extractFastPreviewUrl(html: String, baseUrl: String): String? {
+      val doc = Jsoup.parse(html, baseUrl)
+      val el = doc.selectFirst("span.preview[data-book-url], [data-book-url*=/fast_preview/], a[href*=/fast_preview/]")
+        ?: return null
+      val raw = el.attr("data-book-url").ifBlank { el.attr("href") }.trim()
+      if (raw.isBlank() || raw.contains("/convert/", ignoreCase = true)) return null
+      val resolved = runCatching { baseUrl.toHttpUrl().resolve(raw)?.toString() }.getOrNull() ?: return null
+      return resolved.takeIf { runCatching { validateUrl(it) }.isSuccess }
+    }
+
+    fun extractPreviewFileUrl(html: String, baseUrl: String): String? {
+      val doc = Jsoup.parse(html, baseUrl)
+      val candidates = sequenceOf(
+        doc.selectFirst("iframe#foliate-iframe[src]")?.absUrl("src"),
+        doc.selectFirst("a[href*=/fast_view]")?.absUrl("href"),
+        doc.selectFirst("iframe#bookIframe[src]")?.absUrl("src"),
+      ).filterNotNull().map { it.trim() }.filter { it.isNotBlank() }
+      for (candidate in candidates) {
+        val extracted = extractFileUrlFromViewerSrc(candidate)
+        if (extracted != null) return extracted
+      }
+      return null
+    }
+
+    fun extractFileUrlFromViewerSrc(viewerSrc: String): String? {
+      val parsed = runCatching { viewerSrc.trim().toHttpUrl() }.getOrNull() ?: return null
+      val target = parsed.queryParameter("url")?.trim()?.takeIf { it.isNotBlank() } ?: return null
+      val targetHttp = runCatching { CatalogHttpHelpers.validateHttpsUrl(target) }.getOrNull() ?: return null
+      val lowerPath = targetHttp.encodedPath.lowercase(Locale.ROOT)
+      if (lowerPath.contains("/covers/") || lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg") ||
+        lowerPath.endsWith(".png") || lowerPath.endsWith(".webp") || lowerPath.endsWith(".gif")
+      ) {
+        return null
+      }
+      return targetHttp.toString()
     }
 
     fun extractDownloadLink(html: String, baseUrl: String): String? {

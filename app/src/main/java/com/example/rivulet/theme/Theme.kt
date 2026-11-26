@@ -147,7 +147,7 @@ fun appColorSchemeFor(preset: ReaderThemePreset): ColorScheme = when (preset) {
 
 @Composable
 fun RivuletTheme(
-  preset: ReaderThemePreset = ReaderThemePreset.BLACK_BLUE,
+  preset: ReaderThemePreset = ReaderThemePreset.SOFT_SAGE,
   content: @Composable () -> Unit,
 ) {
   MaterialTheme(

@@ -184,16 +184,16 @@ class AutomaticTextAndCacheTest {
       main { r.setVisible(false) }; finish.complete(Unit)
       eventually { store.windowReady(track, "public-book", 1_000_000) }
       delay(150); assertEquals(listOf(998_500L), starts.toList())
-      main { r.setVisible(true) }; eventually { store.windowReady(track, "public-book", 1_020_000) }
-      delay(150); assertEquals(2, starts.size)
+      main { r.setVisible(true) }; eventually { store.windowReady(track, "public-book", 1_040_000) }
+      delay(150); assertEquals(3, starts.size)
       main { r.playbackDiscontinuity(); r.playback(1_600_000, 2_000_000, track) }
-      eventually { store.windowReady(track, "public-book", 1_620_000) }
-      assertEquals(listOf(998_500L, 1_018_500L, 1_598_500L, 1_618_500L), starts.toList())
+      eventually { store.windowReady(track, "public-book", 1_640_000) }
+      assertEquals(listOf(998_500L, 1_018_500L, 1_038_500L, 1_598_500L, 1_618_500L, 1_638_500L), starts.toList())
       val sentence = ReadAlongText.sentences(book().book, "public-book").single()
       store.saveWindow(track, "public-book", 1_600_000, 1_620_000, listOf(TimedLine(sentence.id, 1_601_000, 1_605_000, text)))
       store.setOffset(track, 1500)
       main { r.retryCurrentPassage() }
-      eventually { starts.size == 5 && store.windowReady(track, "public-book", 1_600_000) }
+      eventually { starts.size == 7 && store.windowReady(track, "public-book", 1_600_000) }
       assertEquals(1_598_500L, starts.last())
       assertEquals(1_601_000L, store.timings(track, "public-book").single().startTimeMs)
       assertEquals(1500L, store.offset(track))
@@ -224,7 +224,10 @@ class AutomaticTextAndCacheTest {
       store,
       ReadAlongAudioDecoder { _, start, _ ->
         decodedStarts.add(start)
-        if (start == 38_500L && lookaheadEntered.isCompleted) prefetchedConcurrent.complete(Unit)
+        if (start == 38_500L) {
+          withTimeout(5_000) { lookaheadEntered.await() }
+          prefetchedConcurrent.complete(Unit)
+        }
         FloatArray(16_000)
       },
       speech = object : SpeechRecognizer {
@@ -343,6 +346,56 @@ class AutomaticTextAndCacheTest {
     } finally {
       prefs.setSyncMode(previousMode)
       prefs.setSpeechModelTier(previousTier)
+      main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively()
+    }
+  }
+
+  @Test fun playheadHysteresisSyncsOneMinuteRestsUntilFortySecondsThenRefills() = runBlocking {
+    val name = "hysteresis-${UUID.randomUUID()}.db"; val db = TorrentDatabase(context, name); val store = ReadAlongStore(db)
+    val files = File(context.cacheDir, "hysteresis-${UUID.randomUUID()}")
+    val models = SpeechModelManager(object : ContextWrapper(context) { override fun getNoBackupFilesDir() = files })
+    models.fastFile.parentFile!!.mkdirs(); models.fastFile.writeBytes(byteArrayOf(1))
+    val prefs = ReaderPreferences(context); val previousMode = prefs.syncMode.value
+    val decodedCount = AtomicInteger()
+    val r = ReadAlongRepository(
+      context,
+      store,
+      ReadAlongAudioDecoder { _, _, _ -> decodedCount.incrementAndGet(); FloatArray(1600) },
+      speech = SpeechRecognizer { _, _ -> emptyList() },
+      models = models,
+    )
+    try {
+      store.attach(track, book(), setOf(3))
+      main {
+        r.setSyncMode(SyncMode.PLAYHEAD_ONLY)
+        r.activate(track, 0, 600_000)
+        r.setVisible(true)
+        r.playback(0, 600_000, track, prepared = true, isPlaying = true)
+      }
+      loaded(r)
+      // Syncs 3 windows up to 60_000L (1 min ahead) and goes idle.
+      eventually {
+        store.windowReady(track, "public-book", 0) &&
+          store.windowReady(track, "public-book", 20_000) &&
+          store.windowReady(track, "public-book", 40_000) &&
+          r.state.value.syncCoverage?.isSyncingNow == false
+      }
+      val callsAtOneMin = decodedCount.get()
+      assertEquals(3, callsAtOneMin)
+      assertFalse(store.windowReady(track, "public-book", 60_000))
+
+      // Advances to 15s (45s ahead remaining > 40s threshold): stays completely idle.
+      main { r.playback(15_000, 600_000, track, prepared = true, isPlaying = true) }
+      delay(150)
+      assertEquals(callsAtOneMin, decodedCount.get())
+      assertFalse(store.windowReady(track, "public-book", 60_000))
+
+      // Advances to 20s (40s ahead remaining): wakes up and refills back to 1 min (60_000..80_000).
+      main { r.playback(20_000, 600_000, track, prepared = true, isPlaying = true) }
+      eventually { store.windowReady(track, "public-book", 60_000) && r.state.value.syncCoverage?.isSyncingNow == false }
+      assertEquals(4, decodedCount.get())
+    } finally {
+      prefs.setSyncMode(previousMode)
       main { r.close() }; db.close(); context.deleteDatabase(name); files.deleteRecursively()
     }
   }

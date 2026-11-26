@@ -294,13 +294,87 @@ class ReadAlongCoreTest {
       SyncMode.entries,
     )
     val oneHourMs = 3_600_000L
-    assertEquals(2, SyncMode.PLAYHEAD_ONLY.horizonWindows(0L, oneHourMs))
-    assertEquals(9, SyncMode.BALANCED.horizonWindows(0L, oneHourMs))
+    assertEquals(3, SyncMode.PLAYHEAD_ONLY.horizonWindows(0L, oneHourMs))
+    assertEquals(15, SyncMode.BALANCED.horizonWindows(0L, oneHourMs))
     assertEquals(45, SyncMode.EXTENDED.horizonWindows(0L, oneHourMs))
     assertEquals(180, SyncMode.FULL_TRACK.horizonWindows(0L, oneHourMs))
+
+    assertEquals(60_000L, SyncMode.PLAYHEAD_ONLY.horizonEndMs(0L, oneHourMs))
+    assertEquals(80_000L, SyncMode.PLAYHEAD_ONLY.horizonEndMs(20_000L, oneHourMs))
+    assertEquals(300_000L, SyncMode.BALANCED.horizonEndMs(0L, oneHourMs))
+    assertEquals(420_000L, SyncMode.BALANCED.horizonEndMs(120_000L, oneHourMs))
+    assertEquals(900_000L, SyncMode.EXTENDED.horizonEndMs(0L, oneHourMs))
+    assertEquals(1_200_000L, SyncMode.EXTENDED.horizonEndMs(300_000L, oneHourMs))
+    assertEquals(oneHourMs, SyncMode.FULL_TRACK.horizonEndMs(0L, oneHourMs))
+
     assertEquals(SyncMode.FULL_TRACK, SyncMode.fromPersisted("CHARGING_FULL"))
     assertEquals(SyncMode.EXTENDED, SyncMode.fromPersisted("EXTENDED"))
     assertEquals(SyncMode.BALANCED, SyncMode.fromPersisted("UNKNOWN"))
+  }
+
+  @Test fun hysteresisSyncSchedulerRestsUntilLowWaterAndRefillsToHighWater() {
+    val dur = 3_600_000L
+    // Playhead: 1m (60s) top, rests until 40s remain while playing, paused syncs current passage only.
+    assertFalse(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.PLAYHEAD_ONLY, fullTrack = false,
+        isPlaying = true, positionMs = 15_000L, durationMs = dur,
+        aheadSyncedMs = 45_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+    assertTrue(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.PLAYHEAD_ONLY, fullTrack = false,
+        isPlaying = true, positionMs = 20_000L, durationMs = dur,
+        aheadSyncedMs = 40_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+    assertFalse(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = false, mode = SyncMode.PLAYHEAD_ONLY, fullTrack = false,
+        isPlaying = false, positionMs = 5_000L, durationMs = dur,
+        aheadSyncedMs = 15_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+
+    // Balanced: 5m (300s) top, rests until 3m (180s) remain.
+    assertFalse(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.BALANCED, fullTrack = false,
+        isPlaying = false, positionMs = 100_000L, durationMs = dur,
+        aheadSyncedMs = 200_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+    assertTrue(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.BALANCED, fullTrack = false,
+        isPlaying = false, positionMs = 120_000L, durationMs = dur,
+        aheadSyncedMs = 180_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+
+    // Extended: 15m (900s) top, rests until 10m (600s) remain, or stops at track end.
+    assertFalse(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.EXTENDED, fullTrack = false,
+        isPlaying = true, positionMs = 250_000L, durationMs = dur,
+        aheadSyncedMs = 650_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+    assertTrue(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.EXTENDED, fullTrack = false,
+        isPlaying = true, positionMs = 300_000L, durationMs = dur,
+        aheadSyncedMs = 600_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = true,
+      ),
+    )
+    assertFalse(
+      SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = true, mode = SyncMode.EXTENDED, fullTrack = false,
+        isPlaying = true, positionMs = 3_300_000L, durationMs = dur,
+        aheadSyncedMs = 300_000L, activeWindowSynced = true, hasUnsyncedAheadWithinHorizon = false,
+      ),
+    )
   }
 
   @Test fun maxStickyGapPreventsStaleHighlightAcrossUntranscribedSeekGaps() {

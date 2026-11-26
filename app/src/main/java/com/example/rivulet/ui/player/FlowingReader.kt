@@ -41,7 +41,7 @@ internal fun FlowingReader(
   paragraphs: List<ReaderParagraph>, list: LazyListState, textSize: Int,
   activeId: Long?, selectedId: Long?, following: Boolean, editing: Boolean, visible: Boolean,
   onTap: (Long) -> Boolean, onLongPress: (Long) -> Unit, modifier: Modifier = Modifier,
-  palette: ReaderPalette = readerPaletteFor(ReaderThemePreset.BLACK_BLUE, MaterialTheme.colorScheme),
+  palette: ReaderPalette = readerPaletteFor(ReaderThemePreset.SOFT_SAGE, MaterialTheme.colorScheme),
   fontFamily: FontFamily = FontFamily.SansSerif,
   lineSpacingExtraSp: Int = 8,
   scrollTargetSentenceId: Long? = null,

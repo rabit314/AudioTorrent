@@ -58,7 +58,7 @@ class ReadAlongRepository(
   private var lookupJob: Job? = null
   private var offsetJob: Job? = null
   private var bufferRetryJob: Job? = null
-  private var exhaustedBase: Long? = null
+  private var restingAtHorizon = false
   private var searchKey: String? = null
   private var searchSucceeded = false
   private var searchResults: List<BookEdition> = emptyList()
@@ -137,13 +137,13 @@ class ReadAlongRepository(
     transcribeFullTrack = false; inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
     searchKey = null; searchSucceeded = false; searchResults = emptyList(); lookupSequence++; lookup = null; recoveryAction = null
     positionMs = initialPositionMs.coerceAtLeast(0); durationMs = initialDurationMs.coerceAtLeast(0); playbackReady = false
-    selectedHint = null; chapterHint = null; lastMatchedSentenceHint = null; exhaustedBase = null
+    selectedHint = null; chapterHint = null; lastMatchedSentenceHint = null; restingAtHorizon = false
     mutable.value = ReadAlongState(track = track, phase = ReadAlongPhase.LOADING)
     load(track, generation)
   }
 
   private fun load(track: ReadAlongTrack, version: Long) {
-    exhaustedBase = null
+    restingAtHorizon = false
     loadJob?.cancel()
     loadJob = scope.launch {
       try {
@@ -273,7 +273,7 @@ class ReadAlongRepository(
       transcribeFullTrack = (mode == SyncMode.FULL_TRACK)
       mutable.update { it.copy(transcribingFullTrack = transcribeFullTrack) }
     }
-    exhaustedBase = null
+    restingAtHorizon = false
     bufferRetryJob?.cancel()
     if (analysisJob?.isActive == true) {
       analysisJob?.cancel()
@@ -292,7 +292,7 @@ class ReadAlongRepository(
     if (models.isDownloaded(tier)) {
       readerPreferences.setSpeechModelTier(tier)
       measuredSyncSpeedRatio = null
-      exhaustedBase = null
+      restingAtHorizon = false
       bufferRetryJob?.cancel()
       if (analysisJob?.isActive == true) {
         analysisJob?.cancel()
@@ -348,7 +348,6 @@ class ReadAlongRepository(
     if (analysisJob?.isActive == true && analysisStartMs >= 0 && kotlin.math.abs(positionMs - analysisStartMs) > 30_000) {
       analysisJob?.cancel(); analysisJob = null
     }
-    if (prevPlaying != isPlaying && isPlaying) exhaustedBase = null
     scheduleAnalysis()
   }
 
@@ -586,7 +585,7 @@ class ReadAlongRepository(
     inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
     catalogMetadata.setScriptModeEnabled(track.infoHash, false)
     source = null; sentences = emptyList(); sentenceTokenCounts = IntArray(0); cachedParagraphs = emptyList()
-    cachedWindows.clear(); matcher = null; timings.clear(); estimated = false; exhaustedBase = null
+    cachedWindows.clear(); matcher = null; timings.clear(); estimated = false; restingAtHorizon = false
     scope.launch {
       withContext(Dispatchers.IO) { store.clearScriptBook(track, book.id) }
       if (current(track, version)) mutable.value = ReadAlongState(track = track)
@@ -600,7 +599,7 @@ class ReadAlongRepository(
     if (!enabled && readerPreferences.syncMode.value == SyncMode.FULL_TRACK) {
       readerPreferences.setSyncMode(SyncMode.BALANCED)
     }
-    exhaustedBase = null
+    restingAtHorizon = false
     mutable.update { it.copy(transcribingFullTrack = enabled) }
     if (!enabled) {
       if (analysisJob?.isActive == true && (!visible || (!isPlaying && readerPreferences.syncMode.value == SyncMode.PLAYHEAD_ONLY))) {
@@ -837,7 +836,7 @@ class ReadAlongRepository(
         models.download(targetTier) { progress -> mutable.update { it.copy(modelProgress = progress) } }
         readerPreferences.setSpeechModelTier(targetTier)
         measuredSyncSpeedRatio = null
-        exhaustedBase = null
+        restingAtHorizon = false
         if (analysisJob?.isActive == true) {
           analysisJob?.cancel()
           analysisJob = null
@@ -889,7 +888,7 @@ class ReadAlongRepository(
           inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
           publishLines(isSyncingNow = false)
         }
-        exhaustedBase = null; clearRecovery()
+        restingAtHorizon = false; clearRecovery()
         mutable.update { it.copy(phase = ReadAlongPhase.READY, message = null) }
         scheduleAnalysis()
       }
@@ -927,18 +926,16 @@ class ReadAlongRepository(
           .firstOrNull { !store.windowReady(track, bookId, it) }
       }
     }
-    val horizonCount = mode.horizonWindows(base, durationMs)
-    if (horizonCount <= 0) return null
+    val horizonEndMs = mode.horizonEndMs(positionMs, durationMs)
+    if (horizonEndMs <= base) return null
     val nextMissing = withContext(Dispatchers.IO) {
-      (0 until horizonCount)
-        .asSequence()
-        .map { base + it * 20_000L }
-        .filter { it >= minStartMs }
-        .takeWhile { it < durationMs }
+      val scanStart = maxOf(base, minStartMs)
+      generateSequence(scanStart) { it + 20_000L }
+        .takeWhile { it < horizonEndMs && it < durationMs }
         .firstOrNull { !store.windowReady(track, bookId, it) }
     }
     if (minStartMs == 0L) {
-      Log.d("ReadAlongPerf", "mode=$mode horizon=$horizonCount nextMissing=$nextMissing playing=$isPlaying speed=$playbackSpeed")
+      Log.d("ReadAlongPerf", "mode=$mode horizonEnd=$horizonEndMs nextMissing=$nextMissing playing=$isPlaying speed=$playbackSpeed")
     }
     return nextMissing
   }
@@ -952,7 +949,29 @@ class ReadAlongRepository(
       correctionJob?.isActive == true || (book.source != TextSyncSource.NARRATION && !isScript) || durationMs <= 0 ||
       loadJob?.isActive == true || importJob?.isActive == true || analysisJob?.isActive == true) return
     if (mutable.value.phase == ReadAlongPhase.ERROR && mutable.value.recovery != null) return
-    if (exhaustedBase == windowBase() && !keepRunningBackground) return
+    val mode = readerPreferences.syncMode.value
+    if (!keepRunningBackground) {
+      val base = windowBase()
+      val activeWindowSynced = cachedWindows.any { base in it.first until it.last }
+      val currentCov = buildCoverageStats(timings.size, isSyncingNow = false)
+      val horizonEndMs = mode.horizonEndMs(positionMs, durationMs)
+      val hasUnsyncedAhead = currentCov.syncedWindowsMs
+        .firstOrNull { base in it.first until it.last }
+        ?.let { it.last < horizonEndMs } ?: true
+      val shouldRun = SyncScheduler.shouldSyncWithHysteresis(
+        restingAtHorizon = restingAtHorizon,
+        mode = mode,
+        fullTrack = false,
+        isPlaying = isPlaying,
+        positionMs = positionMs,
+        durationMs = durationMs,
+        aheadSyncedMs = currentCov.aheadSyncedMs,
+        activeWindowSynced = activeWindowSynced,
+        hasUnsyncedAheadWithinHorizon = hasUnsyncedAhead,
+      )
+      if (!shouldRun) return
+    }
+    restingAtHorizon = false
     bufferRetryJob?.cancel()
     val version = generation
     val request = ++analysisSequence
@@ -967,7 +986,7 @@ class ReadAlongRepository(
           if (!valid()) return@launch
           if (start == null) {
             prefetchJob?.cancel(); prefetchJob = null; prefetchedStart = null
-            exhaustedBase = base
+            restingAtHorizon = true
             if (transcribeFullTrack && isScript) {
               transcribeFullTrack = false
               mutable.update { it.copy(transcribingFullTrack = false) }
@@ -984,7 +1003,7 @@ class ReadAlongRepository(
           val isImmediate = !ahead || (start > base && start <= base + 20_000L)
           val preferredTier = readerPreferences.speechModelTier.value
           if (!models.isInstalled(preferredTier)) {
-            exhaustedBase = base
+            restingAtHorizon = true
             if (transcribeFullTrack) {
               transcribeFullTrack = false
               mutable.update { it.copy(transcribingFullTrack = false) }
@@ -1229,7 +1248,7 @@ class ReadAlongRepository(
           publishLines(isSyncingNow = morePending)
           if (!morePending) {
             prefetchJob?.cancel(); prefetchJob = null; prefetchedStart = null
-            exhaustedBase = windowBase()
+            restingAtHorizon = true
             if (transcribeFullTrack && isScript) {
               transcribeFullTrack = false
               mutable.update { it.copy(transcribingFullTrack = false) }
@@ -1243,8 +1262,7 @@ class ReadAlongRepository(
         if (error is CancellationException) throw error
         inFlightWindowStartMs = null; inFlightWindowEndMs = null; inFlightWindowLines = emptyList()
         if (valid()) {
-          val retryBase = windowBase()
-          exhaustedBase = retryBase
+          restingAtHorizon = true
           val waitingForBuffer = mutable.value.preparingAhead && error.message?.startsWith("Waiting for verified audio data") == true
           if (waitingForBuffer) {
             transcribeFullTrack = false
@@ -1258,10 +1276,11 @@ class ReadAlongRepository(
             }
             if (visible || isFullTrackMode(book.source)) {
               bufferRetryJob?.cancel()
+              val retrySeq = request
               bufferRetryJob = scope.launch {
                 delay(5_000L)
-                if (current(track, version) && exhaustedBase == retryBase) {
-                  exhaustedBase = null
+                if (current(track, version) && restingAtHorizon && analysisSequence == retrySeq) {
+                  restingAtHorizon = false
                   scheduleAnalysis()
                 }
               }
@@ -1321,7 +1340,7 @@ class ReadAlongRepository(
     val index = sentences.indexOfFirst { it.chapterIndex == chapter.index }
     analysisJob?.cancel(); analysisJob = null; lookupJob?.cancel(); lookupSequence++
     clearRecovery()
-    exhaustedBase = null
+    restingAtHorizon = false
     lastMatchedSentenceHint = index.takeIf { it >= 0 }
     mutable.update { it.copy(activeLineIndex = -1, alignmentAttempted = false, searching = false, accessUrl = null, message = "Chapter selected: ${chapter.title}. Preparing narration match…") }
     scope.launch {
@@ -1392,7 +1411,7 @@ class ReadAlongRepository(
   /** Called for an actual player seek, never for ordinary playback progression or speed changes. */
   fun playbackDiscontinuity() {
     playbackReady = false
-    analysisJob?.cancel(); analysisJob = null; analysisSequence++; exhaustedBase = null
+    analysisJob?.cancel(); analysisJob = null; analysisSequence++; restingAtHorizon = false
     mutable.update { it.copy(preparingAhead = false, phase = if (it.phase == ReadAlongPhase.PREPARING) ReadAlongPhase.READY else it.phase) }
     if (pendingReference == null && correctionJob?.isActive != true) return
     val target = mutable.value.correction.target
@@ -1486,7 +1505,7 @@ class ReadAlongRepository(
           correction = SyncCorrectionState(SyncCorrectionPhase.APPLIED, target, "Text aligned.", event = request), canUndoCorrection = true,
           syncProgress = syncProg, syncCoverage = coverage) }
         persistCorrection(target, value, chapterHint)
-        pendingReference = null; exhaustedBase = null
+        pendingReference = null; restingAtHorizon = false
       } catch (error: Exception) {
         if (error is CancellationException) throw error
         if (valid()) mutable.update { it.copy(correction = it.correction.copy(phase = SyncCorrectionPhase.ERROR,
@@ -1614,14 +1633,14 @@ class ReadAlongRepository(
     val fullTrack = isFullTrackMode()
     val reason = overrideReason ?: when {
       isSyncingNow -> null
-      !isPlaying && !fullTrack && mode == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s) · Paused"
+      !isPlaying && !fullTrack && mode == SyncMode.PLAYHEAD_ONLY -> "Playhead (+1m) · Paused"
       !isPlaying && fullTrack -> "Full track synced · Paused"
-      !isPlaying && mode == SyncMode.BALANCED -> "Buffered ahead (+3m) · Paused"
-      !isPlaying && mode == SyncMode.EXTENDED -> "Buffered ahead (+15m) · Paused"
+      !isPlaying && mode == SyncMode.BALANCED -> "Buffered ahead (5m / 3m) · Paused"
+      !isPlaying && mode == SyncMode.EXTENDED -> "Buffered ahead (15m / 10m) · Paused"
       fullTrack -> "Full track synced"
-      mode == SyncMode.PLAYHEAD_ONLY -> "Playhead mode (~40s)"
-      mode == SyncMode.BALANCED -> "Buffered ahead (+3m limit)"
-      mode == SyncMode.EXTENDED -> "Buffered ahead (+15m limit)"
+      mode == SyncMode.PLAYHEAD_ONLY -> "Playhead (1m / 40s)"
+      mode == SyncMode.BALANCED -> "Buffered ahead (5m / 3m)"
+      mode == SyncMode.EXTENDED -> "Buffered ahead (15m / 10m)"
       else -> null
     }
     return ReadAlongTimeline.computeSyncCoverage(

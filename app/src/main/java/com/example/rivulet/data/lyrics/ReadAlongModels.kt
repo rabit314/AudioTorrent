@@ -47,6 +47,35 @@ internal object SyncScheduler {
     return (aheadSyncedMs.coerceAtLeast(0L) / speed).toLong()
   }
 
+  /**
+   * Determines whether hysteresis refill should run for [positionMs].
+   * - If currently resting at horizon, stay idle until [aheadSyncedMs] drops to `mode.resumeAheadMs`
+   *   (with remaining unsynced track ahead) or the active window is no longer covered.
+   * - If paused in `PLAYHEAD_ONLY`, sync only the active passage window cleanly and then rest.
+   */
+  fun shouldSyncWithHysteresis(
+    restingAtHorizon: Boolean,
+    mode: SyncMode,
+    fullTrack: Boolean,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    aheadSyncedMs: Long,
+    activeWindowSynced: Boolean,
+    hasUnsyncedAheadWithinHorizon: Boolean,
+  ): Boolean {
+    if (durationMs <= 0L) return false
+    if (fullTrack) return true
+    if (!activeWindowSynced) return true
+    if (!isPlaying && mode == SyncMode.PLAYHEAD_ONLY) return false
+    val resumeMs = mode.resumeAheadMs ?: return true
+    if (!restingAtHorizon) return hasUnsyncedAheadWithinHorizon
+    val pos = positionMs.coerceAtLeast(0L)
+    val contiguousEnd = (pos + aheadSyncedMs).coerceAtLeast(pos)
+    if (contiguousEnd >= durationMs) return false
+    return aheadSyncedMs <= resumeMs
+  }
+
   fun computeBudget(
     ahead: Boolean,
     isImmediate: Boolean,

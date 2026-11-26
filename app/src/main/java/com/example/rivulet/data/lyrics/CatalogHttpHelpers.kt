@@ -108,6 +108,8 @@ object CatalogHttpHelpers {
     val title = doc.title().lowercase(Locale.ROOT)
     val challengePage = title.contains("checking your browser") ||
       title.contains("verifying your browser") ||
+      title.contains("verify you are human") ||
+      title.contains("verify you're human") ||
       title.contains("just a moment") ||
       title.contains("wait a moment") ||
       title.contains("attention required") ||
@@ -118,6 +120,8 @@ object CatalogHttpHelpers {
       title.contains("ddos") ||
       html.contains("c_token=", ignoreCase = true) ||
       html.contains("diamwall", ignoreCase = true) ||
+      html.contains("/verify_captcha", ignoreCase = true) ||
+      html.contains("h-captcha", ignoreCase = true) ||
       html.contains("cookies are required", ignoreCase = true) ||
       html.contains("/cdn-cgi/challenge-platform", ignoreCase = true) ||
       html.contains("/.well-known/ddos-guard", ignoreCase = true) ||
@@ -205,8 +209,10 @@ object CatalogHttpHelpers {
       val body = response.body ?: throw IOException("The ebook download was empty.")
       if (contentType.contains("html", true)) {
         val page = body.byteStream().use { BookImport.read(it, 2 * 1024 * 1024) }.toString(Charsets.UTF_8)
-        if (isAccessRequired(response.code, page)) throw SiteAccessRequired(accessFallbackUrl)
-        throw IOException("$siteName returned a web page instead of an ebook. Open site access and try again.")
+        if (isAccessRequired(response.code, page)) {
+          throw SiteAccessRequired(accessFallbackUrl, "$siteName blocked direct app download. Try Read / Slow download in site access, or open in Browser and Import.")
+        }
+        throw IOException("$siteName returned a web page instead of an ebook. Open site access or Browser and Import.")
       }
       if (response.code in setOf(401, 403, 513)) throw SiteAccessRequired(accessFallbackUrl)
       if (!response.isSuccessful) {

@@ -164,6 +164,18 @@ class ReaderPreferencesUiTest {
   }
 
   @Test fun aboutAndChangelogShowCurrentVersionAndLinks() {
+    val activity = compose.activity
+    val rawPrefs = activity.getSharedPreferences("readalong_reader", android.content.Context.MODE_PRIVATE)
+    val hadSavedTheme = rawPrefs.contains("reader_theme")
+    val previousTheme = ReaderPreferences(activity).readerTheme.value
+    try {
+      rawPrefs.edit().remove("reader_theme").commit()
+      assertEquals(ReaderThemePreset.SOFT_SAGE, ReaderPreferences(activity).readerTheme.value)
+    } finally {
+      if (hadSavedTheme) rawPrefs.edit().putString("reader_theme", previousTheme.name).commit()
+      else rawPrefs.edit().remove("reader_theme").commit()
+    }
+
     var showAbout by mutableStateOf(true)
     var showChangelog by mutableStateOf(false)
     compose.setContent {

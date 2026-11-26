@@ -181,6 +181,7 @@ class LibGenClient(
       val origin = "${baseHttp.scheme}://${baseHttp.host}"
       val table = doc.selectFirst("#tablelibgen") ?: return emptyList()
       val headers = table.select("thead th").map { it.text().trim().lowercase(Locale.ROOT) }
+      val titleCol = headers.indexOfFirst { it.contains("title") }
       val authorCol = headers.indexOfFirst { it.contains("author") }
       val langCol = headers.indexOfFirst { it.contains("language") }
       val extCol = headers.indexOfFirst { it.contains("ext") }
@@ -196,15 +197,22 @@ class LibGenClient(
         val detailUrl = "$origin/ads.php?md5=$md5"
 
         val detectedTitleIdx = cells.indexOfFirst { it.selectFirst("a[href*=edition.php]") != null }
-        val shift = if (detectedTitleIdx >= 0) detectedTitleIdx else if (cells.firstOrNull()?.selectFirst("img") != null || cells.size >= 10) 1 else 0
-        val titleCellIdx = shift
-        val authorIdx = if (authorCol >= 0) authorCol + shift else shift + 1
-        val langIdx = if (langCol >= 0) langCol + shift else shift + 4
-        val extIdx = if (extCol >= 0) extCol + shift else shift + 7
+        val headerShift = when {
+          titleCol >= 0 && detectedTitleIdx >= 0 -> (detectedTitleIdx - titleCol).coerceAtLeast(0)
+          titleCol >= 0 -> 0
+          cells.firstOrNull()?.selectFirst("img") != null || cells.size >= 10 -> 1
+          else -> 0
+        }
+        val fallbackShift = if (detectedTitleIdx >= 0) detectedTitleIdx else headerShift
+        val titleCellIdx = if (titleCol >= 0) titleCol + headerShift else fallbackShift
+        val authorIdx = if (authorCol >= 0) authorCol + headerShift else fallbackShift + 1
+        val langIdx = if (langCol >= 0) langCol + headerShift else fallbackShift + 4
+        val extIdx = if (extCol >= 0) extCol + headerShift else fallbackShift + 7
 
         val titleCell = cells.getOrNull(titleCellIdx) ?: continue
         val title = titleCell.selectFirst("a[href*=edition.php]")?.text()?.trim()
           ?.ifBlank { titleCell.selectFirst("b")?.text()?.trim() }
+          ?.ifBlank { titleCell.select("a").firstOrNull { !it.attr("href").contains("file.php") }?.text()?.trim() }
           ?.ifBlank { titleCell.ownText().trim() }
           .orEmpty()
         if (title.isBlank()) continue

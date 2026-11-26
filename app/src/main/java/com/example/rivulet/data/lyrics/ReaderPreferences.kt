@@ -11,30 +11,40 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class SyncMode(
   val label: String,
   val summary: String,
+  val targetAheadMs: Long?,
+  val resumeAheadMs: Long?,
   val fixedWindows: Int?,
   val lookaheadCooldownMs: Long,
 ) {
   PLAYHEAD_ONLY(
-    label = "Playhead",
-    summary = "Syncs only the active passage (~40s); rests at 0% CPU when paused.",
-    fixedWindows = 2,
+    label = "Playhead (+1 min)",
+    summary = "Syncs 1 min ahead while playing; waits until 40s remains before refilling. Rests when paused.",
+    targetAheadMs = 60_000L,
+    resumeAheadMs = 40_000L,
+    fixedWindows = 3,
     lookaheadCooldownMs = 350L,
   ),
   BALANCED(
-    label = "Balanced (+3 min)",
-    summary = "Pre-syncs 3 minutes ahead while reading or paused, then rests at 0% CPU.",
-    fixedWindows = 9,
+    label = "Balanced (5m / 3m)",
+    summary = "Syncs 5 min ahead while reading or paused, then rests at 0% CPU until 3 min remain.",
+    targetAheadMs = 300_000L,
+    resumeAheadMs = 180_000L,
+    fixedWindows = 15,
     lookaheadCooldownMs = 1_800L,
   ),
   EXTENDED(
-    label = "Extended (+15 min)",
-    summary = "Pre-syncs 15 minutes ahead while reading or paused with gentle cooldowns.",
+    label = "Extended (15m / 10m)",
+    summary = "Syncs 15 min ahead while reading or paused, then rests at 0% CPU until 10 min remain.",
+    targetAheadMs = 900_000L,
+    resumeAheadMs = 600_000L,
     fixedWindows = 45,
     lookaheadCooldownMs = 2_400L,
   ),
   FULL_TRACK(
     label = "Full track",
     summary = "Pre-syncs the entire active track even while paused or on Cover.",
+    targetAheadMs = null,
+    resumeAheadMs = null,
     fixedWindows = null,
     lookaheadCooldownMs = 3_000L,
   );
@@ -43,6 +53,14 @@ enum class SyncMode(
     if (durationMs <= baseMs) return 0
     val remaining = ((durationMs - baseMs - 1L) / 20_000L + 1).toInt().coerceAtLeast(1)
     return fixedWindows?.coerceAtMost(remaining) ?: remaining
+  }
+
+  fun horizonEndMs(positionMs: Long, durationMs: Long): Long {
+    if (durationMs <= 0L) return 0L
+    val cap = targetAheadMs ?: return durationMs
+    val rawEnd = positionMs.coerceAtLeast(0L) + cap
+    val aligned = ((rawEnd + 15_999L) / 20_000L) * 20_000L
+    return minOf(durationMs, aligned)
   }
 
   companion object {
@@ -95,7 +113,7 @@ class ReaderPreferences(context: Context) {
   private val size = MutableStateFlow(normalize(preferences.getInt("text_size_sp", DEFAULT_SIZE)))
   val textSize = size.asStateFlow()
 
-  private val themeState = MutableStateFlow(enumOrDefault(preferences.getString("reader_theme", null), ReaderThemePreset.BLACK_BLUE))
+  private val themeState = MutableStateFlow(enumOrDefault(preferences.getString("reader_theme", null), ReaderThemePreset.SOFT_SAGE))
   val readerTheme = themeState.asStateFlow()
 
   private val fontState = MutableStateFlow(enumOrDefault(preferences.getString("reader_font", null), ReaderFontFamily.SANS))
