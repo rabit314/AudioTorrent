@@ -8,7 +8,7 @@
 
 Listen to audiobooks, albums, podcasts, and long-form audio instantly while they download.
 
-[![Latest Release](https://img.shields.io/badge/Release-v0.3.0--beta-00C853?style=flat-square&logo=android&logoColor=white)](https://github.com/rabit314/AudioTorrent/releases/latest)
+[![Latest Release](https://img.shields.io/badge/Release-v0.4.0--beta-00C853?style=flat-square&logo=android&logoColor=white)](https://github.com/rabit314/AudioTorrent/releases/latest)
 [![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B%20(API%2026%2B)-3DDC84?style=flat-square&logo=android&logoColor=white)](https://developer.android.com/about/versions/oreo)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0%2B-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-UI-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white)](https://developer.android.com/jetpack/compose)
@@ -26,8 +26,8 @@ Listen to audiobooks, albums, podcasts, and long-form audio instantly while they
 Get the latest installable pre-release APK directly for your Android phone or tablet:
 
 <p align="center">
-  <a href="https://github.com/rabit314/AudioTorrent/releases/download/v0.3.0-beta/AudioTorrent.apk">
-    <img src="https://img.shields.io/badge/Download_APK-AudioTorrent_v0.3.0--beta-00C853?style=for-the-badge&logo=android&logoColor=white" alt="Download AudioTorrent APK" />
+  <a href="https://github.com/rabit314/AudioTorrent/releases/download/v0.4.0-beta/AudioTorrent.apk">
+    <img src="https://img.shields.io/badge/Download_APK-AudioTorrent_v0.4.0--beta-00C853?style=for-the-badge&logo=android&logoColor=white" alt="Download AudioTorrent APK" />
   </a>
   &nbsp;&nbsp;
   <a href="https://github.com/rabit314/AudioTorrent/releases">
@@ -37,7 +37,7 @@ Get the latest installable pre-release APK directly for your Android phone or ta
 
 > [!TIP]
 > **Installation Instructions:**
-> 1. Download **[`AudioTorrent.apk`](https://github.com/rabit314/AudioTorrent/releases/download/v0.3.0-beta/AudioTorrent.apk)** directly to your device.
+> 1. Download **[`AudioTorrent.apk`](https://github.com/rabit314/AudioTorrent/releases/download/v0.4.0-beta/AudioTorrent.apk)** directly to your device.
 > 2. Open the downloaded file. When prompted, allow your browser or file manager to *"Install unknown apps"*.
 > 3. Launch AudioTorrent from your app drawer.
 > 4. **Compatibility**: Requires **Android 8.0 (API 26)** or newer. Bundled native libraries support both **`arm64-v8a`** and **`x86_64`** devices.
