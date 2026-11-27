@@ -1,6 +1,6 @@
 # Architecture
 
-AudioTorrent is a single-module Android app. The source package is `com.example.rivulet`; `RivuletApp` wires the application container, torrent engine, database, stream server, and playback controller.
+AudioTorrent is a single-module Android app. The source package is `com.example.audiotorrent`; `AudioTorrentApp` wires the application container, torrent engine, database, stream server, and playback controller.
 
 ## Playback flow
 
@@ -10,7 +10,7 @@ flowchart LR
     Engine --> Session[StreamSession]
     Session --> HTTP[StreamServer / loopback HTTP]
     HTTP --> Player[PlaybackController / ExoPlayer]
-    Player <--> Service[RivuletMediaService / MediaSession]
+    Player <--> Service[AudioTorrentMediaService / MediaSession]
     UI[Compose screens] <--> Player
     UI <--> Engine
     Engine <--> DB[(SQLite)]
@@ -19,7 +19,7 @@ flowchart LR
 
 `StreamSession` maps file offsets to torrent pieces and schedules a read-ahead window. `StreamServer` is a custom socket-based HTTP range server bound to `127.0.0.1`, with a per-server token in stream URLs. ExoPlayer consumes that local stream. MP4/M4B tail pieces receive additional priority to help load metadata.
 
-`PlaybackController` coordinates playback requests, chapter queues, resume positions, bookmarks, speed, and sleep timers. `RivuletMediaService` connects playback to Android's foreground media service and system media controls.
+`PlaybackController` coordinates playback requests, chapter queues, resume positions, bookmarks, speed, and sleep timers. `AudioTorrentMediaService` connects playback to Android's foreground media service and system media controls.
 
 ## Catalog discovery and companion text
 
@@ -35,12 +35,12 @@ Torrent metadata reads, removal and shutdown share a lifetime guard because nati
 
 ## Source map
 
-Paths below are relative to [`app/src/main/java/com/example/rivulet/`](../app/src/main/java/com/example/rivulet/).
+Paths below are relative to [`app/src/main/java/com/example/audiotorrent/`](../app/src/main/java/com/example/audiotorrent/).
 
 | Location | Responsibility |
 | --- | --- |
 | `MainActivity.kt` | Entry point and incoming Android intents |
-| `RivuletApp.kt` | Application container and dependency wiring |
+| `AudioTorrentApp.kt` | Application container and dependency wiring |
 | `Navigation.kt`, `NavigationKeys.kt` | Screen navigation |
 | `torrent/` | libtorrent4j integration, torrent lifecycle, and download priorities |
 | `stream/` | Piece scheduling and the loopback HTTP bridge |

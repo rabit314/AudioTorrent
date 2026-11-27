@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(rivulet_narration LANGUAGES C CXX)
+project(audiotorrent_narration LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Inference must remain optimized in debug APKs used on the phone.
@@ -27,7 +27,7 @@ FetchContent_Declare(whisper
   DOWNLOAD_NAME whisper-v1.9.4.tar.gz
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(whisper)
-add_library(rivulet_whisper SHARED whisper_jni.cpp)
-target_link_libraries(rivulet_whisper PRIVATE whisper android log)
-target_compile_options(rivulet_whisper PRIVATE -O3)
-target_link_options(rivulet_whisper PRIVATE -Wl,-z,max-page-size=16384)
+add_library(audiotorrent_whisper SHARED whisper_jni.cpp)
+target_link_libraries(audiotorrent_whisper PRIVATE whisper android log)
+target_compile_options(audiotorrent_whisper PRIVATE -O3)
+target_link_options(audiotorrent_whisper PRIVATE -Wl,-z,max-page-size=16384)

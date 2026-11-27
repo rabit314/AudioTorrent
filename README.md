@@ -68,7 +68,7 @@ flowchart LR
     Engine --> Session["StreamSession<br/>(Priority Window)"]
     Session --> HTTP["StreamServer<br/>(127.0.0.1 HTTP Range Bridge)"]
     HTTP --> Player["PlaybackController<br/>(Media3 ExoPlayer)"]
-    Player <--> Service["RivuletMediaService<br/>(MediaSession Service)"]
+    Player <--> Service["AudioTorrentMediaService<br/>(MediaSession Service)"]
     UI["Jetpack Compose UI"] <--> Player
     UI <--> Engine
     Engine <--> DB[("SQLite Database")]

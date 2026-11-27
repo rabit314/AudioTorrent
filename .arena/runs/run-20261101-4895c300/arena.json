@@ -1,0 +1,123 @@
+{
+  "version": 2,
+  "controller_version": "2.1.0",
+  "run": "run-20261101-4895c300",
+  "project_root": "D:\\Work\\Projects\\AudioTorrent",
+  "created_at": "2026-11-01T21:54:33.941816+00:00",
+  "phase": "spawn",
+  "seed": 949468326,
+  "count": 4,
+  "wave": 2,
+  "current": 0,
+  "rounds": [],
+  "byes": {},
+  "alive": [
+    "a001",
+    "a002",
+    "a003",
+    "a004"
+  ],
+  "solutions": {},
+  "winner": null,
+  "baseline": false,
+  "final_result": null,
+  "ledger": {
+    "spawn-a001": {
+      "issued": true,
+      "attempt": 1,
+      "issued_at": "2026-11-01T21:54:47.934095+00:00",
+      "phase_token": "00:spawn",
+      "outputs": [
+        "solutions/a001-r00.md"
+      ],
+      "inputs": [
+        "task.md"
+      ],
+      "brief": "briefs/spawn/spawn-a001.md",
+      "brief_sha256": "dc9f4a7f39c7718e48264a6ee790793dba1a0cd78e4e42122641286ccb16cb3e"
+    },
+    "spawn-a002": {
+      "issued": true,
+      "attempt": 1,
+      "issued_at": "2026-11-01T21:54:47.950665+00:00",
+      "phase_token": "00:spawn",
+      "outputs": [
+        "solutions/a002-r00.md"
+      ],
+      "inputs": [
+        "task.md"
+      ],
+      "brief": "briefs/spawn/spawn-a002.md",
+      "brief_sha256": "b8b36162c294df2f98aeb0053aab7396ac3cf670eb485d34d52c246cdeba4ed8"
+    },
+    "spawn-a003": {
+      "issued": true,
+      "attempt": 1,
+      "issued_at": "2026-11-01T22:08:14.080937+00:00",
+      "phase_token": "00:spawn",
+      "outputs": [
+        "solutions/a003-r00.md"
+      ],
+      "inputs": [
+        "task.md"
+      ],
+      "brief": "briefs/spawn/spawn-a003.md",
+      "brief_sha256": "8cf5219275f718803d1547098917c108ce928f25bb46d6d479c74044adc70d58"
+    },
+    "spawn-a004": {
+      "issued": true,
+      "attempt": 1,
+      "issued_at": "2026-11-01T22:08:14.096449+00:00",
+      "phase_token": "00:spawn",
+      "outputs": [
+        "solutions/a004-r00.md"
+      ],
+      "inputs": [
+        "task.md"
+      ],
+      "brief": "briefs/spawn/spawn-a004.md",
+      "brief_sha256": "9dd04f3a296f0175135a2267ef1ebb977bcf37109062d65d9ce0901698d4d37c"
+    }
+  },
+  "watch_hashes": {
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\torrent\\TorrentEngine.kt": "b9b7e74be4c51bd0de9d3488d21f2c4b83700fb968a071f7175d858d4b9dca4d",
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\torrent\\PublicWebseedBridge.kt": "467f00e6f91a4505959588c516410a0f6260f6415781de103f88d5ed4371d558",
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\stream\\StreamSession.kt": "1885565e61653e7dace26fdac255364bfef15544fa0a3c402e461f1b806598c5",
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\playback\\PlaybackController.kt": "284dc1fe5de79c2a971dabc6b3470889f662eae0ce0e3eb83efd561e3d4ec874",
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\data\\lyrics\\Pcm16kResampler.kt": "3636f7b9725de5843042511f7e02d513b8e76164e45fa3f4f7840b3a47d29b1c",
+    "app\\src\\main\\java\\com\\example\\audiotorrent\\Navigation.kt": "d44679586f6d660e3165ca3a59d6f1270ec35df5fd0f782975c6bd2c1fb9fe63"
+  },
+  "skill_hashes": {
+    "bracket.py": "607ff5d5f9e259cad0f68eba1f9804fbb764447b3c5dcc651519e882a4a4344b",
+    "dealer.py": "a9b2e3c13de37029067f5285cfb3b70ec599600f64c12fbc3dd1b45ad541c82e",
+    "SKILL.md": "785fe43f75f4bb10943b0eeed1b0b00876525f313270f64c82e18034c9d2b19e",
+    "rubric.md": "23c2831de00a495a6a411c8ba15988696cd313843ec33203662f2b5f7d81b2e1",
+    "strategies.json": "2c9ca22fc34735ca810d3235d3fb804788f140e1758909347b8f94f00794531b"
+  },
+  "snapshot_hashes": {
+    "task.md": "631bcc97d36cd3c60400022469f6e703616c6ead114515006d50c96c74252087"
+  },
+  "cards": {
+    "a001": {
+      "reasoning": "Evidence-weighted: prioritize verifiable facts and test claims against concrete observations.",
+      "workflow": "Test first: design verification checks and edge cases before proposing the implementation.",
+      "strategy": "Security: minimize privileges, data exposure and unsafe side effects."
+    },
+    "a002": {
+      "reasoning": "Worked examples: derive the method using concrete inputs and outputs, then generalize.",
+      "workflow": "Outline first: design the structure and obligations before filling in details.",
+      "strategy": "Clarity: communicate decisions in concrete, concise and directly usable terms."
+    },
+    "a003": {
+      "reasoning": "Adversarial: actively search for counterexamples, hidden assumptions and security flaws.",
+      "workflow": "Requirements matrix: map every requirement to a deliverable and a verification step.",
+      "strategy": "Robustness: tolerate partial failures, restarts and changing environments."
+    },
+    "a004": {
+      "reasoning": "Minimal counterexample: seek the smallest case that defeats an assumption and repair from there.",
+      "workflow": "Failure-driven iteration: intentionally test known and imagined failure paths and repair the result.",
+      "strategy": "Speed and economy: minimize cost, computational waste and unnecessary dependencies."
+    }
+  },
+  "updated_at": "2026-11-01T22:08:14.108558+00:00"
+}

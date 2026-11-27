@@ -1,0 +1,60 @@
+package com.example.audiotorrent
+
+import androidx.compose.runtime.Composable
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.ui.NavDisplay
+import com.example.audiotorrent.ui.catalog.AudiobookSearchScreen
+import com.example.audiotorrent.ui.history.HistoryScreen
+import com.example.audiotorrent.ui.library.LibraryScreen
+import com.example.audiotorrent.ui.player.PlayerScreen
+import com.example.audiotorrent.ui.torrent.TorrentScreen
+
+@Composable
+fun MainNavigation(container: AppContainer, startInPlayer: Boolean = false) {
+  val initialKeys = if (startInPlayer) arrayOf(Main, Player) else arrayOf(Main)
+  val backStack = rememberNavBackStack(*initialKeys)
+
+  NavDisplay(
+    backStack = backStack,
+    onBack = { backStack.removeLastOrNull() },
+    entryProvider =
+      entryProvider {
+        entry<Main> {
+          LibraryScreen(
+            container = container,
+            onOpenTorrent = { infoHash -> backStack.add(TorrentDetail(infoHash)) },
+            onOpenPlayer = { backStack.add(Player) },
+            onOpenAudioBookBay = { backStack.add(AudioBookBay) },
+            onOpenHistory = { backStack.add(History) },
+          )
+        }
+        entry<History> {
+          HistoryScreen(
+            container = container,
+            onBack = { backStack.removeLastOrNull() },
+            onOpenPlayer = { backStack.add(Player) },
+          )
+        }
+        entry<AudioBookBay> {
+          AudiobookSearchScreen(
+            container = container,
+            onBack = { backStack.removeLastOrNull() },
+            onOpenTorrent = { infoHash -> backStack.add(TorrentDetail(infoHash)) },
+            onOpenPlayer = { backStack.add(Player) },
+          )
+        }
+        entry<TorrentDetail> { key ->
+          TorrentScreen(
+            container = container,
+            infoHash = key.infoHash,
+            onBack = { backStack.removeLastOrNull() },
+            onPlay = { backStack.add(Player) },
+          )
+        }
+        entry<Player> {
+          PlayerScreen(container = container, onBack = { backStack.removeLastOrNull() })
+        }
+      },
+  )
+}

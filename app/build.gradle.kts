@@ -14,11 +14,11 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.example.rivulet"
+    namespace = "com.example.audiotorrent"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
     defaultConfig {
-        applicationId = "com.example.rivulet"
+        applicationId = "com.example.audiotorrent"
         minSdk = 26
         targetSdk = 36
         versionCode = 5

@@ -41,7 +41,7 @@ Enable USB debugging and connect a supported device or start an emulator. With `
 ```bash
 adb devices
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.example.rivulet/.MainActivity
+adb shell am start -n com.example.audiotorrent/.MainActivity
 ```
 
 If more than one device is connected, pass `-s SERIAL` to each `adb` command.
@@ -54,7 +54,7 @@ Instrumented tests require a connected device or emulator:
 
 On Windows, substitute `.\gradlew.bat` for `./gradlew`.
 
-The read-along integration tests use separate randomly named databases and a public-domain speech fixture; they do not reset the listening library. Before running their native speech test, download the pinned model specified in `SpeechModelManager.kt`, verify its checksum, and copy it using ADB into `no_backup/readalong/ggml-base.en-q5_1.bin` under `run-as com.example.rivulet`. Select only `com.example.rivulet.readalong.ReadAlongIntegrationTest` when running this suite. Xiaomi devices may require a separate approval to install the test APK, even when application updates install successfully.
+The read-along integration tests use separate randomly named databases and a public-domain speech fixture; they do not reset the listening library. Before running their native speech test, download the pinned model specified in `SpeechModelManager.kt`, verify its checksum, and copy it using ADB into `no_backup/readalong/ggml-base.en-q5_1.bin` under `run-as com.example.audiotorrent`. Select only `com.example.audiotorrent.readalong.ReadAlongIntegrationTest` when running this suite. Xiaomi devices may require a separate approval to install the test APK, even when application updates install successfully.
 
 ## Release builds
 

@@ -124,7 +124,7 @@ jobjectArray runTranscribe(
     jint requested_threads
 ) {
     auto *engine = reinterpret_cast<Engine *>(handle);
-    const auto wordClass = env->FindClass("com/example/rivulet/data/lyrics/SpeechWord");
+    const auto wordClass = env->FindClass("com/example/audiotorrent/data/lyrics/SpeechWord");
     const auto ctor = env->GetMethodID(wordClass, "<init>", "(Ljava/lang/String;JJ)V");
     const int size = env->GetArrayLength(input);
     std::vector<float> pcm(size);
@@ -267,7 +267,7 @@ jobjectArray runTranscribe(
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCreate(JNIEnv *env, jobject, jstring path) {
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeCreate(JNIEnv *env, jobject, jstring path) {
     ensureBackendsLoaded();
     const char *name = env->GetStringUTFChars(path, nullptr);
     auto params = whisper_context_default_params();
@@ -279,17 +279,17 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCreate(JNIEnv *env, job
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeCancel(JNIEnv *, jobject, jlong handle) {
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeCancel(JNIEnv *, jobject, jlong handle) {
     if (handle) reinterpret_cast<Engine *>(handle)->cancelled.store(true);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeResetCancel(JNIEnv *, jobject, jlong handle) {
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeResetCancel(JNIEnv *, jobject, jlong handle) {
     if (handle) reinterpret_cast<Engine *>(handle)->cancelled.store(false);
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeTranscribe(
     JNIEnv *env,
     jobject,
     jlong handle,
@@ -300,7 +300,7 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribe(
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeWithPrompt(
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeTranscribeWithPrompt(
     JNIEnv *env,
     jobject,
     jlong handle,
@@ -312,7 +312,7 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeWithPrompt(
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeConfigured(
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeTranscribeConfigured(
     JNIEnv *env,
     jobject,
     jlong handle,
@@ -325,7 +325,7 @@ Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeTranscribeConfigured(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_rivulet_data_lyrics_WhisperEngine_nativeDestroy(JNIEnv *, jobject, jlong handle) {
+Java_com_example_audiotorrent_data_lyrics_WhisperEngine_nativeDestroy(JNIEnv *, jobject, jlong handle) {
     auto *engine = reinterpret_cast<Engine *>(handle);
     if (engine) { whisper_free(engine->context); delete engine; }
 }
